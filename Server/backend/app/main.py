@@ -1,34 +1,21 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
+from app.db import Base, engine
+from app.routes.project import router as project_router
+from app.routes.agent import router as agent_router
+from app.routes.task import router as task_router
 
-# 🔥 이게 반드시 먼저 있어야 함
-app = FastAPI()
+Base.metadata.create_all(bind=engine)
 
-# 데이터 모델
-class Project(BaseModel):
-    title: str
-    description: str
-
-# 임시 저장소
-projects = []
-
-# API
-@app.post("/projects")
-def create_project(project: Project):
-    new_project = {
-        "id": len(projects) + 1,
-        "title": project.title,
-        "description": project.description
-    }
-    projects.append(new_project)
-    return new_project
-
-
-@app.get("/projects")
-def get_projects():
-    return projects
-
+app = FastAPI(title="Capstone Backend")
 
 @app.get("/")
 def root():
     return {"message": "backend running"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+app.include_router(project_router)
+app.include_router(agent_router)
+app.include_router(task_router)
