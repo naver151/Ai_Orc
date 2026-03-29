@@ -63,18 +63,23 @@ function App() {
     }
 
     const newAIName = prompt('새로운 AI의 이름을 입력하세요:', `AI_${Object.keys(logs).length + 1}`);
-    
-    if (newAIName && !logs[newAIName]) {
-      setLogs({ ...logs, [newAIName]: [`[${newAIName}] 요원 배치 완료. 명령을 대기합니다.`] });
-      setCurrentAI(newAIName);
-      setProgresses(prev => ({ ...prev, [newAIName]: 0 }));
-      setStatuses(prev => ({ ...prev, [newAIName]: 'READY' }));
-      
-      if (ws.current?.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify({ action: 'spawn', aiName: newAIName }));
-      }
-    } else if (logs[newAIName]) {
+    if (!newAIName) return;
+
+    if (logs[newAIName]) {
       alert('이미 존재하는 AI 이름입니다.');
+      return;
+    }
+
+    const provider = prompt('사용할 AI 모델을 입력하세요:\n- gpt (GPT-4o)\n- claude (Claude 3.5)\n- gemini (Gemini 1.5 Pro)', 'gpt');
+    if (!provider) return;
+
+    setLogs({ ...logs, [newAIName]: [`[${newAIName}] 요원 배치 완료. 명령을 대기합니다.`] });
+    setCurrentAI(newAIName);
+    setProgresses(prev => ({ ...prev, [newAIName]: 0 }));
+    setStatuses(prev => ({ ...prev, [newAIName]: 'READY' }));
+
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({ action: 'spawn', aiName: newAIName, provider }));
     }
   };
 
