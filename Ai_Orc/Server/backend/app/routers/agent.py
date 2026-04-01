@@ -17,7 +17,9 @@ def create_agent(agent: AgentCreate, db: Session = Depends(get_db)):
     new_agent = AgentModel(
         project_id=agent.project_id,
         name=agent.name,
-        role=agent.role
+        role=agent.role,
+        provider=agent.provider,
+        model=agent.model
     )
 
     db.add(new_agent)

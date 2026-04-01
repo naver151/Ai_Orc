@@ -5,6 +5,8 @@ from app.db import get_db
 from app.models import TaskModel, AgentModel, TaskExecution
 from app.schemas import TaskExecutionRead
 from app.memory import save_memory, search_memory
+from app.ai_clients import get_ai_client
+from datetime import datetime, timezone
 
 router = APIRouter()
 
@@ -39,6 +41,30 @@ def run_orchestrator(db: Session = Depends(get_db)):
         # 에이전트의 과거 유사 작업 기억 검색
         past_memories = search_memory(agent_id=agent.id, query=task.task)
 
+        # AI 클라이언트 선택 및 실행
+        ai_result = None
+        error_msg = None
+        try:
+            ai_client = get_ai_client(provider=agent.provider, model=agent.model)
+            ai_result = ai_client.run(role=agent.role, task=task.task, context=past_memories)
+
+            # 실행 완료 기록 업데이트
+            execution.result = ai_result
+            execution.finished_at = datetime.now(timezone.utc)
+            task.status = "completed"
+
+            # AI 결과를 메모리에 저장 (다음 작업에서 참고)
+            save_memory(agent_id=agent.id, task=task.task, result=ai_result)
+
+        except Exception as e:
+            error_msg = str(e)
+            execution.error = error_msg
+            execution.finished_at = datetime.now(timezone.utc)
+            task.status = "failed"
+
+        db.commit()
+        db.refresh(execution)
+
         dispatched.append({
             "task_id": task.id,
             "task": task.task,
@@ -48,8 +74,10 @@ def run_orchestrator(db: Session = Depends(get_db)):
             "status": task.status,
             "execution_id": execution.id,
             "started_at": execution.started_at,
-            "past_memories": past_memories,  # 과거 유사 작업 기억
-            # TODO: 여기서 나중에 OpenAI API 호출 예정 (past_memories를 컨텍스트로 전달)
+            "finished_at": execution.finished_at,
+            "past_memories": past_memories,
+            "result": ai_result,
+            "error": error_msg,
         })
 
     return {

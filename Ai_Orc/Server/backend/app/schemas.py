@@ -21,6 +21,8 @@ class AgentCreate(BaseModel):
     project_id: int
     name: str
     role: str
+    provider: str = "openai"    # 기본값 openai
+    model: str = "gpt-4o"       # 기본값 gpt-4o
 
 
 class AgentRead(BaseModel):
@@ -28,6 +30,8 @@ class AgentRead(BaseModel):
     project_id: int
     name: str
     role: str
+    provider: str
+    model: str
 
     class Config:
         from_attributes = True

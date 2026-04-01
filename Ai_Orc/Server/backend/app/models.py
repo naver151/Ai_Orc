@@ -18,6 +18,8 @@ class AgentModel(Base):
     project_id = Column(Integer, ForeignKey("projects.id"))
     name = Column(String)
     role = Column(String)
+    provider = Column(String, default="openai")   # openai, anthropic, gemini 등
+    model = Column(String, default="gpt-4o")      # 사용할 모델명
 
 
 class TaskModel(Base):

@@ -1,0 +1,282 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+/* 1. 전체 화면 및 폰트, 기본 뼈대 설정 */
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+#root {
+  width: 100vw;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.layout {
+  display: flex;
+  height: 100vh;
+}
+
+/* 2. 좌측 사이드바 및 AI 탭 디자인 */
+.sidebar {
+  width: 450px;
+  background-color: #000;
+  color: #0f0;
+  display: flex;
+  flex-direction: column;
+  padding: 15px;
+  box-sizing: border-box;
+  border-right: 2px solid #333;
+}
+
+.ai-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 15px;
+  border-bottom: 1px solid #333;
+  padding-bottom: 10px;
+}
+
+.ai-tab {
+  background: transparent;
+  border: 1px solid #333;
+  color: #555;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 10px;
+  padding: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-tab.active {
+  color: #0f0;
+  border-color: #0f0;
+  background: rgba(0, 255, 0, 0.1);
+}
+
+.ai-tab.add-btn {
+  font-weight: bold;
+  color: #fff;
+  border-color: #555;
+  width: 30px;
+  text-align: center;
+  padding: 8px 9.5px;
+}
+
+.ai-tab.add-btn:hover {
+  background: #333;
+  color: #0f0;
+  border-color: #0f0;
+}
+
+.delete-btn {
+  color: #ff4444;
+  font-size: 8px;
+  padding: 2px 4px;
+  border-radius: 50%;
+  transition: 0.2s;
+  opacity: 0; 
+}
+
+.ai-tab:hover .delete-btn {
+  opacity: 1;
+}
+
+.delete-btn:hover {
+  background-color: #ff4444;
+  color: #000;
+}
+
+/* 3. 좌측 하단 터미널(로그 출력 및 명령어 입력) 영역 */
+.terminal {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 12px;
+  overflow-y: auto;
+}
+
+.terminal-log {
+  flex: 1;
+  margin-bottom: 10px;
+}
+
+.log-line {
+  margin-bottom: 8px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.terminal-input-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.terminal-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: rgb(34, 0, 255);
+  font-family: 'Press Start 2P', monospace;
+  font-size: 12px;
+  outline: none;
+}
+
+/* 4. 터미널 상단 컨트롤 패널 (상태 뱃지 및 시작/중지 버튼) */
+.terminal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #111;
+  padding: 8px 10px;
+  border-bottom: 2px solid #333;
+  margin-bottom: 10px;
+}
+
+.status-badge {
+  font-size: 10px;
+  color: #ffaa00; 
+}
+
+.status-badge.RUNNING { color: #0f0; } 
+.status-badge.STOPPED { color: #ff4444; } 
+.status-badge.COMPLETED { color: #00ffff; } 
+
+.control-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.control-btn {
+  background: transparent;
+  border: 1px solid #555;
+  color: #fff;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+.control-btn.start:hover {
+  border-color: #0f0;
+  color: #0f0;
+  background: rgba(0, 255, 0, 0.1);
+}
+
+.control-btn.stop:hover {
+  border-color: #ff4444;
+  color: #ff4444;
+  background: rgba(255, 68, 68, 0.1);
+}
+
+.control-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  border-color: #555 !important;
+  color: #555 !important;
+  background: transparent !important;
+}
+
+/* 5. 우측 픽셀 맵 영역 및 그리드 배경 설정 */
+.pixel-floor {
+  flex: 1;
+  height: 100vh;
+  display: grid; 
+  grid-template-columns: repeat(10, 100px); 
+  grid-template-rows: repeat(7, 100px);
+  background-color: #d2b48c;
+  background-image: conic-gradient(
+    #8b4513 90deg,
+    transparent 90deg 180deg,
+    #8b4513 180deg 270deg,
+    transparent 270deg
+  );
+  background-size: 200px 200px;
+  image-rendering: pixelated;
+  overflow: auto;
+}
+
+.map-item {
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.comp-img {
+  background-image: url('./assets/computer.png'); 
+}
+
+/* 6. 컴퓨터 3대 고정 위치 (좌표 교정 완료) */
+.pos-comp-1 {
+  grid-area: 2 / 2 / 4 / 4; 
+  margin: auto; width: 200px; height: 200px;
+}
+
+.pos-comp-2 {
+  grid-area: 2 / 5 / 4 / 7; 
+  margin: auto; width: 200px; height: 200px;
+}
+  
+.pos-comp-3 {
+  grid-area: 2 / 8 / 4 / 10; 
+  margin: auto; width: 200px; height: 200px;
+}
+
+/* 7. 에이전트 이미지 및 상태창을 감싸는 컨테이너 설정 */
+.agent-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end; 
+  padding-bottom: 20px;
+}
+
+.agent-icon {
+  width: 120px; 
+  height: 120px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+/* 8. 요원 머리 위 상태창 (숫자, 게이지바, 반투명 검은 배경) */
+.agent-status-floating {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background-color: rgba(0, 0, 0, 0.7); 
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid #555;
+  margin-bottom: 8px; 
+}
+
+.progress-text {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 8px;
+  color: #fff;
+  margin-bottom: 5px; 
+}
+
+.progress-bar-container {
+  width: 80px;
+  height: 8px;
+  background-color: #222;
+  border: 1px solid #000;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  transition: width 0.2s linear, background-color 0.2s;
+}
