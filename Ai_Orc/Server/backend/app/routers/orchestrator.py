@@ -4,9 +4,8 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import TaskModel, AgentModel, TaskExecution
 from app.schemas import TaskExecutionRead
-from app.memory import save_memory, search_memory
-from app.ai_clients import get_ai_client
-from datetime import datetime, timezone
+from app.memory import search_memory, save_memory, delete_memory, get_memory_count
+from app.tasks import run_ai_task
 
 router = APIRouter()
 
@@ -38,32 +37,15 @@ def run_orchestrator(db: Session = Depends(get_db)):
         db.refresh(task)
         db.refresh(execution)
 
-        # 에이전트의 과거 유사 작업 기억 검색
-        past_memories = search_memory(agent_id=agent.id, query=task.task)
-
-        # AI 클라이언트 선택 및 실행
-        ai_result = None
-        error_msg = None
-        try:
-            ai_client = get_ai_client(provider=agent.provider, model=agent.model)
-            ai_result = ai_client.run(role=agent.role, task=task.task, context=past_memories)
-
-            # 실행 완료 기록 업데이트
-            execution.result = ai_result
-            execution.finished_at = datetime.now(timezone.utc)
-            task.status = "completed"
-
-            # AI 결과를 메모리에 저장 (다음 작업에서 참고)
-            save_memory(agent_id=agent.id, task=task.task, result=ai_result)
-
-        except Exception as e:
-            error_msg = str(e)
-            execution.error = error_msg
-            execution.finished_at = datetime.now(timezone.utc)
-            task.status = "failed"
-
-        db.commit()
-        db.refresh(execution)
+        # Redis 큐에 AI 작업 등록 (비동기 처리)
+        run_ai_task.delay(
+            task_id=task.id,
+            agent_id=agent.id,
+            task_text=task.task,
+            provider=agent.provider,
+            model=agent.model,
+            role=agent.role
+        )
 
         dispatched.append({
             "task_id": task.id,
@@ -74,10 +56,7 @@ def run_orchestrator(db: Session = Depends(get_db)):
             "status": task.status,
             "execution_id": execution.id,
             "started_at": execution.started_at,
-            "finished_at": execution.finished_at,
-            "past_memories": past_memories,
-            "result": ai_result,
-            "error": error_msg,
+            "message": "Redis 큐에 등록됨. Celery worker가 처리합니다."
         })
 
     return {
@@ -95,9 +74,23 @@ def save_agent_memory(agent_id: int, task: str, result: str):
 
 @router.get("/orchestrator/memory/search")
 def search_agent_memory(agent_id: int, query: str):
-    """에이전트의 과거 기억에서 유사한 작업 검색"""
+    """에이전트의 과거 기억에서 유사한 작업 검색 (유사도 점수 포함)"""
     memories = search_memory(agent_id=agent_id, query=query)
     return {"agent_id": agent_id, "query": query, "memories": memories}
+
+
+@router.delete("/orchestrator/memory/{agent_id}")
+def delete_agent_memory(agent_id: int):
+    """특정 에이전트의 모든 메모리 삭제"""
+    deleted_count = delete_memory(agent_id=agent_id)
+    return {"message": f"{deleted_count}개의 메모리를 삭제했습니다.", "agent_id": agent_id, "deleted_count": deleted_count}
+
+
+@router.get("/orchestrator/memory/count")
+def get_agent_memory_count(agent_id: int):
+    """특정 에이전트의 저장된 메모리 개수 조회"""
+    count = get_memory_count(agent_id=agent_id)
+    return {"agent_id": agent_id, "memory_count": count}
 
 
 @router.get("/orchestrator/executions", response_model=list[TaskExecutionRead])
