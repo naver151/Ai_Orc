@@ -34,6 +34,8 @@ class OpenAIProvider(AIProvider):
             stream=True,
         )
         async for chunk in stream:
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta
             if delta.content:
                 yield delta.content

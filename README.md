@@ -6,3 +6,4 @@ Node.js ver - 24.10.0(LTS)
 
 npm ver - 11.9.0
 
+py

@@ -8,6 +8,8 @@ from app.db import Base, engine
 from app.routes.project import router as project_router
 from app.routes.agent import router as agent_router
 from app.routes.task import router as task_router
+from app.routes.orchestrator import router as orchestrator_router
+from app.routes.upload import router as upload_router
 from app.connection_manager import connection_manager
 from app.ai.agent_runner import agent_manager
 
@@ -29,6 +31,8 @@ app.add_middleware(
 app.include_router(project_router)
 app.include_router(agent_router)
 app.include_router(task_router)
+app.include_router(orchestrator_router)
+app.include_router(upload_router)
 
 
 # ── 헬스 체크 ─────────────────────────────────────────────────
