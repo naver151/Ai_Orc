@@ -17,21 +17,39 @@ from .providers.base import AIProvider
 from .providers.claude import ClaudeProvider
 from .providers.openai_provider import OpenAIProvider
 from .providers.gemini import GeminiProvider
+from .providers.yolo_provider import YOLOProvider
+from .providers.github_provider import GitHubProvider
 
 # 프로바이더 이름 → 클래스 매핑
 PROVIDER_MAP: dict[str, type[AIProvider]] = {
-    "claude": ClaudeProvider,
+    # OpenAI
     "gpt": OpenAIProvider,
     "gpt-4o": OpenAIProvider,
     "openai": OpenAIProvider,
+    # Anthropic
+    "claude": ClaudeProvider,
+    # Google
     "gemini": GeminiProvider,
+    # GitHub Models (PAT 인증, 무료 할당량)
+    "github": GitHubProvider,
+    "github-gpt4o": lambda: GitHubProvider("gpt-4o"),
+    "github-gpt4o-mini": lambda: GitHubProvider("gpt-4o-mini"),
+    "github-llama": lambda: GitHubProvider("llama"),
+    "github-llama-70b": lambda: GitHubProvider("llama-70b"),
+    "github-llama-8b": lambda: GitHubProvider("llama-8b"),
+    "github-mistral": lambda: GitHubProvider("mistral"),
+    "github-phi": lambda: GitHubProvider("phi"),
+    # YOLO
+    "yolo": YOLOProvider,
+    "yolov8n": YOLOProvider,
 }
 
 
 def get_provider(name: str) -> AIProvider:
-    """프로바이더 이름으로 인스턴스를 생성합니다. 없으면 Claude 기본값."""
-    cls = PROVIDER_MAP.get(name.lower(), ClaudeProvider)
-    return cls()
+    """프로바이더 이름으로 인스턴스를 생성합니다. 없으면 GitHubProvider 기본값."""
+    entry = PROVIDER_MAP.get(name.lower(), GitHubProvider)
+    # lambda(callable이지만 type이 아닌 경우)도 처리
+    return entry() if callable(entry) else entry()
 
 
 # ──────────────────────────────────────────────
@@ -48,6 +66,7 @@ class AgentState:
         self.system_prompt: str = ""           # 커스텀 페르소나
         self.status: str = "READY"
         self.current_task: Optional[asyncio.Task] = None
+        self.current_task_text: str = ""       # 현재 수행 중인 작업 텍스트 (마우스오버용)
         self.is_killed: bool = False
 
         # Event가 set → 실행 중, clear → 일시 정지(대기)
@@ -125,9 +144,11 @@ class AgentManager:
         # 대화 이력에 사용자 메시지 추가
         state.history.append({"role": "user", "content": text})
         state.status = "RUNNING"
+        state.current_task_text = text
 
         await websocket.send_json({"type": "status",   "aiName": ai_name, "status": "RUNNING"})
         await websocket.send_json({"type": "progress", "aiName": ai_name, "percent": 0})
+        await websocket.send_json({"type": "current_task", "aiName": ai_name, "task": text})
 
         full_response = ""
         char_count = 0
@@ -178,8 +199,10 @@ class AgentManager:
 
             if not state.is_killed:
                 state.status = "COMPLETED"
-                await websocket.send_json({"type": "status",   "aiName": ai_name, "status": "COMPLETED"})
-                await websocket.send_json({"type": "progress", "aiName": ai_name, "percent": 100})
+                state.current_task_text = ""
+                await websocket.send_json({"type": "status",      "aiName": ai_name, "status": "COMPLETED"})
+                await websocket.send_json({"type": "progress",    "aiName": ai_name, "percent": 100})
+                await websocket.send_json({"type": "current_task","aiName": ai_name, "task": ""})
 
 
 # 애플리케이션 전역 싱글턴

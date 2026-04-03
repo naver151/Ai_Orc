@@ -16,9 +16,9 @@
   left: 0;
   z-index: 5;
   background: transparent;
-  background-repeat: no-repeat;  /* 👈 추가 */
-  background-size: contain;      /* 👈 확인 */
-  background-position: center;   /* 👈 추가 */
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
 }
 
 .monitor-item {
@@ -29,9 +29,9 @@
   left: 20px;
   z-index: 20;
   background: transparent;
-  background-repeat: no-repeat;  /* 👈 추가 */
-  background-size: contain;      /* 👈 확인 */
-  background-position: center;   /* 👈 추가 */
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
 }
 
 .monitor-item-flipped {
@@ -51,8 +51,8 @@
   width: 200px;
   height: 180px;
   position: absolute;
-  top: 35px;    /* 모니터 아래 위치, 눈으로 조정 */
-  left: 13px;   /* 좌우 위치 조정 */
+  top: 35px;
+  left: 13px;
   z-index: 20;
   background: transparent;
   background-repeat: no-repeat;
@@ -64,7 +64,7 @@
   width: 100px;
   height: 80px;
   position: absolute;
-  top: 40px; 
+  top: 40px;
   left: 100px;
   z-index: 20;
   background: transparent;
