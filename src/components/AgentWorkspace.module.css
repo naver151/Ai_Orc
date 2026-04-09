@@ -1,0 +1,198 @@
+.scene {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  overflow: hidden;
+}
+
+.dotScene {
+  position: absolute;
+  inset: 0;
+  background: #0a0a0f;
+  transition: opacity 0.4s;
+  z-index: 2;
+}
+
+.dotContainer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.dotEl {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  pointer-events: none;
+}
+
+.dotLbl {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.dotOv {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  pointer-events: none;
+}
+
+.workScene {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s;
+  z-index: 1;
+  background: #0a0a0f;
+}
+
+.workGrid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.panel {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 20px;
+  opacity: 0;
+  transform: scale(0.96);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.panelShow {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.panelDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: pulseDot 1.8s ease-in-out infinite;
+}
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.6); }
+}
+
+.panelName {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.panelBadge {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 5px;
+  margin-left: auto;
+}
+
+.panelTask {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.35);
+  line-height: 1.5;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.panelLog {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.panelLog::-webkit-scrollbar {
+  display: none;
+}
+
+.logLine {
+  font-size: 11px;
+  font-family: 'Menlo', 'Consolas', monospace;
+  line-height: 1.6;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.25s, transform 0.25s;
+}
+
+.logLineShow {
+  opacity: 0.7;
+  transform: translateY(0);
+}
+
+.logLineDone {
+  opacity: 1 !important;
+  font-weight: 600;
+}
+
+.panelProgress {
+  height: 2px;
+  border-radius: 1px;
+  margin-top: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.panelProgressFill {
+  height: 100%;
+  border-radius: 1px;
+  width: 0%;
+  transition: width 0.35s ease;
+}
+
+.panelDoneOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.4s;
+  pointer-events: none;
+}
+
+.panelDoneOverlayShow {
+  opacity: 1;
+}
+
+.panelDoneCheck {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: var(--font-display);
+}
