@@ -67,6 +67,7 @@ function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [expandedLog, setExpandedLog] = useState(null);
 
+
   const ws = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -166,17 +167,6 @@ function App() {
       if (res.ok) setOrchLogs(await res.json());
     } catch (_) {}
     setLogsLoading(false);
-  };
-
-  const rateLog = async (id, rating) => {
-    try {
-      await fetch(`http://localhost:8000/orchestration-logs/${id}/rating`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rating }),
-      });
-      setOrchLogs(prev => prev.map(l => l.id === id ? { ...l, rating } : l));
-    } catch (_) {}
   };
 
   // ── 2. 요원 추가 (이름 입력 모달) ────────────────────────
@@ -512,17 +502,6 @@ function App() {
                         <div className="log-field"><b>관리자:</b> {log.manager_name}</div>
                         {log.plan_summary && <div className="log-field"><b>계획:</b> {log.plan_summary}</div>}
                         <div className="log-field"><b>요청:</b> {log.user_prompt}</div>
-                        <div className="log-rating">
-                          <span>평점: </span>
-                          {[1,2,3,4,5].map(n => (
-                            <button
-                              key={n}
-                              className={`rating-star ${log.rating >= n ? 'filled' : ''}`}
-                              onClick={() => rateLog(log.id, n)}
-                            >★</button>
-                          ))}
-                          {log.rating && <span className="rating-label">{log.rating}/5</span>}
-                        </div>
                       </div>
                     )}
                   </div>

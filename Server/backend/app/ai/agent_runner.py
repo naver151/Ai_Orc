@@ -5,13 +5,19 @@ from typing import Optional
 from fastapi import WebSocket
 from .providers.base import AIProvider
 from .providers.claude import ClaudeProvider
-from .providers.openai_provider import OpenAIProvider
+from .providers.openai_provider import OpenAIProvider  # 파인튜닝 모델 교체에도 사용
 from .providers.gemini import GeminiProvider
 from .providers.yolo_provider import YOLOProvider
 from .providers.github_provider import GitHubProvider
 from app.memory import save_memory_for, search_memory_for
 from app.db import SessionLocal
 from app.models import OrchestrationLog
+import os
+from dotenv import load_dotenv
+load_dotenv(override=True, encoding="utf-8")
+
+# 파인튜닝 완료 시 .env에 FINETUNED_MODEL=ft:gpt-4o-mini-... 추가하면 자동 적용
+_FINETUNED_MODEL = os.getenv("FINETUNED_MODEL", "")
 
 PROVIDER_MAP = {
     "gpt": OpenAIProvider, "gpt-4o": OpenAIProvider, "openai": OpenAIProvider,
@@ -181,6 +187,11 @@ class AgentManager:
             self._agents[ai_name] = AgentState(ai_name, provider_name)
         else:
             self._agents[ai_name].provider = get_provider(provider_name)
+
+        # 파인튜닝 모델이 설정되어 있고 이 에이전트가 관리자이면 자동 교체
+        if _FINETUNED_MODEL and self.is_manager(ai_name):
+            self._agents[ai_name].provider = OpenAIProvider(_FINETUNED_MODEL)
+
         return self._agents[ai_name]
 
     def get(self, ai_name: str) -> Optional[AgentState]:
