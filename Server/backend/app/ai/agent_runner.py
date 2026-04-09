@@ -1,130 +1,54 @@
 """
-AI Crew Commander — 에이전트 런타임
+AI Crew Commander — 에이전트 런타임 (Phase 2)
 
-AgentManager: 에이전트 등록·제어(pause/resume/kill) 관리
-LangGraph 오케스트레이션: graph_runner.orchestration_graph 위임
-단일 워커 실행: LangChain 직접 호출 (스트리밍 콜백)
+AgentManager 싱글턴은 agent_state.py에서 관리.
+이 모듈은 WebSocket 연결과 LangGraph/단일 실행을 중계.
 """
 
 from __future__ import annotations
 import asyncio
 import json
-import os
-from typing import Optional, Any
 
-from dotenv import load_dotenv
 from fastapi import WebSocket
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableConfig
 
-from app.ai.lc_providers import get_lc_model, WSStreamHandler
+from app.ai.agent_state import AgentState, AgentManager, agent_manager   # noqa: F401 (re-export)
+from app.ai.lc_providers import get_lc_model, ProgressWSStreamHandler
 from app.ai.graph_runner import orchestration_graph
 from app.ai.graph_state import GraphState
-from app.memory import save_memory_for, search_memory_for
+from app.ai.lc_memory import save_agent_memory, build_rag_context
 from app.db import SessionLocal
 from app.models import OrchestrationLog
 
-load_dotenv(override=True, encoding="utf-8")
+# lc_providers에 없으므로 여기서 import
+from app.ai.lc_providers import WSStreamHandler
 
 
-# ── AgentState: 에이전트 제어 정보 (LangGraph 실행과 분리) ───────────────────
-
-class AgentState:
-    """에이전트 슬롯의 메타 정보 및 pause/resume/kill 제어."""
-
-    def __init__(self, ai_name: str, provider_key: str = "github"):
-        self.ai_name      = ai_name
-        self.provider_key = provider_key
-        self.status       = "READY"
-        self.current_task: Optional[asyncio.Task] = None
-        self.is_killed    = False
-        self._pause_event = asyncio.Event()
-        self._pause_event.set()
-
-    def pause(self) -> None:
-        self._pause_event.clear()
-        self.status = "STOPPED"
-
-    def resume(self) -> None:
-        self._pause_event.set()
-        self.status = "RUNNING"
-
-    def kill(self) -> None:
-        self.is_killed = True
-        self._pause_event.set()
-        if self.current_task and not self.current_task.done():
-            self.current_task.cancel()
-        self.status = "STOPPED"
-
-    async def wait_if_paused(self) -> None:
-        await self._pause_event.wait()
-
-    @property
-    def model_name(self) -> str:
-        return self.provider_key
-
-
-# ── AgentManager ─────────────────────────────────────────────────────────────
-
-class AgentManager:
-
-    def __init__(self):
-        self._agents: dict[str, AgentState] = {}
-
-    # ── 등록·조회 ────────────────────────────────────────────
-
-    def get_or_create(self, ai_name: str, provider_key: str = "github") -> AgentState:
-        if ai_name not in self._agents:
-            self._agents[ai_name] = AgentState(ai_name, provider_key)
-        else:
-            self._agents[ai_name].provider_key = provider_key
-        return self._agents[ai_name]
-
-    def get(self, ai_name: str) -> Optional[AgentState]:
-        return self._agents.get(ai_name)
-
-    def remove(self, ai_name: str) -> None:
-        if ai_name in self._agents:
-            self._agents.pop(ai_name).kill()
-
-    def is_manager(self, ai_name: str) -> bool:
-        if not self._agents:
-            return False
-        return list(self._agents.keys())[0] == ai_name
-
-    def get_worker_names(self, manager_name: str) -> list[str]:
-        return [n for n in self._agents if n != manager_name]
-
-    def get_provider_map(self) -> dict[str, str]:
-        return {name: state.provider_key for name, state in self._agents.items()}
+class _Runner:
+    """WebSocket ↔ LangGraph / 단일 워커 실행 중계."""
 
     # ── 단일 워커 실행 ────────────────────────────────────────
 
     async def run_prompt(self, ai_name: str, text: str, websocket: WebSocket) -> None:
-        """워커 에이전트 단독 실행 (오케스트레이션 없이)."""
-        state = self.get(ai_name)
+        state = agent_manager.get(ai_name)
         if not state:
             return
 
-        # 메모리 주입
-        memories = search_memory_for(ai_name, text, n_results=2)
-        enriched = text
-        if memories:
-            mem_block = "\n".join(
-                f"[과거 참고 #{i+1} 관련도:{m['relevance_score']}]\n{m['document']}"
-                for i, m in enumerate(memories)
-            )
-            enriched = f"[이전 유사 작업 참고]\n{mem_block}\n\n[현재 요청]\n{text}"
+        # 메모리 주입 (LangChain retriever)
+        rag = build_rag_context(ai_name, text, k=2)
+        enriched = f"{rag}[현재 요청]\n{text}" if rag else text
 
-        # 스트리밍 콜백
-        handler = WSStreamHandler(websocket, ai_name)
-        model = get_lc_model(state.provider_key, streaming=True, callbacks=[handler])
+        handler = ProgressWSStreamHandler(websocket, ai_name)
+        cfg = RunnableConfig(callbacks=[handler])
+        model = get_lc_model(state.provider_key, streaming=True)
 
         await websocket.send_json({"type": "current_task", "aiName": ai_name, "task": text})
 
-        full_response = ""
+        result = ""
         try:
-            response = await model.ainvoke([HumanMessage(content=enriched)])
-            full_response = response.content
+            resp = await model.ainvoke([HumanMessage(content=enriched)], config=cfg)
+            result = resp.content
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -133,9 +57,9 @@ class AgentManager:
                 "message": f"[오류] {type(e).__name__}: {e}",
             })
 
-        if full_response:
+        if result:
             try:
-                save_memory_for(ai_name, text, full_response[:2000])
+                save_agent_memory(ai_name, text, result[:2000])
             except Exception:
                 pass
 
@@ -147,21 +71,16 @@ class AgentManager:
     async def run_orchestrated_prompt(
         self, manager_name: str, text: str, websocket: WebSocket
     ) -> None:
-        """
-        LangGraph 그래프 실행.
-        plan → dispatch → workers(병렬) → synthesize
-        """
-        worker_names = self.get_worker_names(manager_name)
+        worker_names = agent_manager.get_worker_names(manager_name)
         if not worker_names:
             await self.run_prompt(manager_name, text, websocket)
             return
 
-        # 초기 GraphState 구성
-        initial_state: GraphState = {
+        initial: GraphState = {
             "user_prompt":         text,
             "manager_name":        manager_name,
             "worker_names":        worker_names,
-            "provider_map":        self.get_provider_map(),
+            "provider_map":        agent_manager.get_provider_map(),
             "plan_summary":        "",
             "subtasks":            [],
             "is_direct":           False,
@@ -175,22 +94,22 @@ class AgentManager:
             "retry_count":         0,
             "max_retries":         2,
             "websocket":           websocket,
+            "agent_manager_ref":   agent_manager,   # pause/kill 체크용
         }
 
-        # LangGraph 실행
-        final_state = await orchestration_graph.ainvoke(initial_state)
+        final = await orchestration_graph.ainvoke(initial)
 
-        # 오케스트레이션 로그 저장 (직접 답변이 아닌 경우)
-        if not final_state.get("is_direct") and final_state.get("plan_summary"):
+        # 오케스트레이션 로그 저장
+        if not final.get("is_direct") and final.get("plan_summary"):
             await asyncio.to_thread(
                 _save_orch_log,
                 manager_name,
                 worker_names,
                 text,
-                final_state.get("plan_summary", ""),
-                final_state.get("subtasks", []),
-                final_state.get("worker_results", {}),
-                final_state.get("final_synthesis", ""),
+                final.get("plan_summary", ""),
+                final.get("subtasks", []),
+                final.get("worker_results", {}),
+                final.get("final_synthesis", ""),
             )
 
 
@@ -227,6 +146,10 @@ def _save_orch_log(
         db.close()
 
 
-# ── 싱글턴 ───────────────────────────────────────────────────────────────────
+# ── 외부에 노출되는 싱글턴 ───────────────────────────────────────────────────
+# main.py가 import하는 agent_manager는 agent_state.py의 싱글턴과 동일 객체
+_runner = _Runner()
 
-agent_manager = AgentManager()
+# main.py 호환 인터페이스: agent_manager가 run_prompt / run_orchestrated_prompt를 가짐
+agent_manager.run_prompt = _runner.run_prompt                           # type: ignore[attr-defined]
+agent_manager.run_orchestrated_prompt = _runner.run_orchestrated_prompt # type: ignore[attr-defined]

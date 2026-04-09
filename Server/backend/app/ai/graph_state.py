@@ -52,4 +52,5 @@ class GraphState(TypedDict):
     max_retries:     int
 
     # ── 런타임 전용 (직렬화 안 함 — 체크포인터 미사용) ────────
-    websocket: Any         # FastAPI WebSocket
+    websocket:        Any  # FastAPI WebSocket
+    agent_manager_ref: Any # AgentManager 참조 (pause/kill 체크용)

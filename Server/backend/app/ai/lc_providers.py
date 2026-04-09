@@ -85,6 +85,23 @@ class WSStreamHandler(AsyncCallbackHandler):
         })
 
 
+# ── 진행률 추적 핸들러 ────────────────────────────────────────────────────────
+
+class ProgressWSStreamHandler(WSStreamHandler):
+    """문자 수 기반 진행률을 함께 전송."""
+
+    def __init__(self, websocket: Any, ai_name: str):
+        super().__init__(websocket, ai_name)
+        self._char_count = 0
+
+    async def on_llm_new_token(self, token: str, **kwargs) -> None:
+        if token:
+            self._char_count += len(token)
+            await self.ws.send_json({"type": "log", "aiName": self.ai_name, "message": token})
+            pct = min(int(self._char_count / 20), 99)
+            await self.ws.send_json({"type": "progress", "aiName": self.ai_name, "percent": pct})
+
+
 # ── LangChain 모델 팩토리 ─────────────────────────────────────────────────────
 
 def get_lc_model(
