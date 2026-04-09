@@ -93,7 +93,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "type": "log",
                     "aiName": ai_name,
-                    "message": f"[{ai_name}] 에이전트 준비 완료 — 모델: {state.provider.model_name}",
+                    "message": f"[{ai_name}] 에이전트 준비 완료 — 모델: {state.model_name}",
                 })
 
             # ── prompt: AI 호출 및 스트리밍 ──────────────────
