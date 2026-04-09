@@ -10,6 +10,7 @@ from app.routes.agent import router as agent_router
 from app.routes.task import router as task_router
 from app.routes.orchestrator import router as orchestrator_router
 from app.routes.upload import router as upload_router
+from app.routes.orch_logs import router as orch_logs_router
 from app.connection_manager import connection_manager
 from app.ai.agent_runner import agent_manager
 
@@ -33,6 +34,7 @@ app.include_router(agent_router)
 app.include_router(task_router)
 app.include_router(orchestrator_router)
 app.include_router(upload_router)
+app.include_router(orch_logs_router)
 
 
 # ── 헬스 체크 ─────────────────────────────────────────────────
@@ -110,9 +112,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 state.is_killed = False
                 state._pause_event.set()
 
-                state.current_task = asyncio.create_task(
-                    agent_manager.run_prompt(ai_name, text, websocket)
-                )
+                # 첫 번째 에이전트(관리자)이면 오케스트레이션, 아니면 일반 채팅
+                if agent_manager.is_manager(ai_name):
+                    state.current_task = asyncio.create_task(
+                        agent_manager.run_orchestrated_prompt(ai_name, text, websocket)
+                    )
+                else:
+                    state.current_task = asyncio.create_task(
+                        agent_manager.run_prompt(ai_name, text, websocket)
+                    )
 
             # ── pause: 일시 정지 ──────────────────────────────
             elif action == "pause":

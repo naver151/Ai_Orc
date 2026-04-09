@@ -27,6 +27,15 @@ const MODEL_TO_PROVIDER = {
   'YOLO (객체탐지)':     'yolo',
 };
 
+// grid-area "rs / cs / re / ce" → 픽셀 중심 좌표 (셀 크기 100px)
+function gridAreaCenter(area) {
+  const [rs, cs, re, ce] = area.split('/').map(Number);
+  return {
+    x: ((cs - 1) + (ce - 1)) / 2 * 100,
+    y: ((rs - 1) + (re - 1)) / 2 * 100,
+  };
+}
+
 // 요원 4자리 그리드 배치
 const gridConfig = [
   { desk: "2 / 5 / 4 / 7", agent: "2 / 5 / 4 / 7" },  // 관리자 (중앙 상단)
@@ -45,12 +54,18 @@ function App() {
   const [models, setModels] = useState({});        // 표시용 모델명
   const [providers, setProviders] = useState({});  // 백엔드 provider 키
   const [currentTasks, setCurrentTasks] = useState({}); // 마우스오버 툴팁용
+  const [orchestrationLinks, setOrchestrationLinks] = useState([]); // [{from, to, active}]
+  const [orchestrationPhase, setOrchestrationPhase] = useState({}); // {aiName: 'planning'|'synthesis'|null}
 
   // UI 상태
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showNameModal, setShowNameModal] = useState(false);
   const [tempName, setTempName] = useState('');
   const [editingAI, setEditingAI] = useState(null); // 모델 선택 모달
+  const [sidebarTab, setSidebarTab] = useState('agents'); // 'agents' | 'logs'
+  const [orchLogs, setOrchLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [expandedLog, setExpandedLog] = useState(null);
 
   const ws = useRef(null);
   const fileInputRef = useRef(null);
@@ -105,12 +120,64 @@ function App() {
 
       } else if (data.type === 'current_task') {
         setCurrentTasks(prev => ({ ...prev, [aiName]: data.task }));
+
+      // ── 오케스트레이션 메시지 ──
+      } else if (data.type === 'orchestration_start') {
+        setOrchestrationPhase(prev => ({ ...prev, [aiName]: 'planning' }));
+        setLogs(prev => ({
+          ...prev,
+          [aiName]: [...(prev[aiName] || []), `> [오케스트레이션] 팀원 ${data.workers.length}명에게 작업 분배 시작`],
+        }));
+
+      } else if (data.type === 'subtask_assign') {
+        setOrchestrationLinks(prev => {
+          const existing = prev.filter(l => !(l.from === data.from && l.to === data.to));
+          return [...existing, { from: data.from, to: data.to, active: true }];
+        });
+        setLogs(prev => ({
+          ...prev,
+          [data.from]: [...(prev[data.from] || []), `> [배분] ${data.to} → ${data.task}`],
+        }));
+
+      } else if (data.type === 'orchestration_synthesis') {
+        setOrchestrationPhase(prev => ({ ...prev, [aiName]: 'synthesis' }));
+        setLogs(prev => ({
+          ...prev,
+          [aiName]: [...(prev[aiName] || []), `> [종합] 팀원 결과를 취합하여 최종 답변 생성 중...`],
+        }));
+
+      } else if (data.type === 'orchestration_done') {
+        setOrchestrationPhase(prev => ({ ...prev, [aiName]: null }));
+        // 연결선을 비활성화 (0.8초 후 제거)
+        setOrchestrationLinks(prev => prev.map(l => ({ ...l, active: false })));
+        setTimeout(() => setOrchestrationLinks([]), 800);
       }
     };
 
     ws.current.onerror = (error) => console.error('웹소켓 에러 발생:', error);
     return () => { if (ws.current) ws.current.close(); };
   }, []);
+
+  // ── 1-b. 오케스트레이션 로그 불러오기 ────────────────────
+  const fetchOrchLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const res = await fetch('http://localhost:8000/orchestration-logs?limit=30');
+      if (res.ok) setOrchLogs(await res.json());
+    } catch (_) {}
+    setLogsLoading(false);
+  };
+
+  const rateLog = async (id, rating) => {
+    try {
+      await fetch(`http://localhost:8000/orchestration-logs/${id}/rating`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rating }),
+      });
+      setOrchLogs(prev => prev.map(l => l.id === id ? { ...l, rating } : l));
+    } catch (_) {}
+  };
 
   // ── 2. 요원 추가 (이름 입력 모달) ────────────────────────
   const handleAddAI = () => {
@@ -305,6 +372,19 @@ function App() {
       <div className={`sidebar ${isSidebarOpen ? 'open' : 'closed'}`}>
         <div className="sidebar-content">
 
+          {/* 사이드바 상단 탭 전환 */}
+          <div className="sidebar-tabs">
+            <button
+              className={`sidebar-tab-btn ${sidebarTab === 'agents' ? 'active' : ''}`}
+              onClick={() => setSidebarTab('agents')}
+            >요원</button>
+            <button
+              className={`sidebar-tab-btn ${sidebarTab === 'logs' ? 'active' : ''}`}
+              onClick={() => { setSidebarTab('logs'); fetchOrchLogs(); }}
+            >로그</button>
+          </div>
+
+          {sidebarTab === 'agents' && (<>
           {/* 요원 탭 목록 */}
           <div className="ai-tabs">
             {Object.keys(logs).map((aiName, index) => (
@@ -320,7 +400,7 @@ function App() {
             <button className="ai-tab add-btn" onClick={handleAddAI}>+</button>
           </div>
 
-          {/* 터미널 */}
+          {/* 터미널 (agents 탭) */}
           <div className="terminal">
             {currentAI ? (
               <>
@@ -404,11 +484,90 @@ function App() {
               </div>
             )}
           </div>
+          </>)}
+
+          {/* ── 로그 탭 패널 ── */}
+          {sidebarTab === 'logs' && (
+            <div className="log-viewer">
+              <div className="log-viewer-header">
+                <span>오케스트레이션 기록</span>
+                <button className="log-refresh-btn" onClick={fetchOrchLogs}>↻ 새로고침</button>
+              </div>
+              {logsLoading && <div className="log-loading">불러오는 중...</div>}
+              {!logsLoading && orchLogs.length === 0 && (
+                <div className="log-empty">기록이 없습니다.<br/>오케스트레이션을 실행하면 자동 저장됩니다.</div>
+              )}
+              <div className="log-list">
+                {orchLogs.map(log => (
+                  <div key={log.id} className="log-card">
+                    <div
+                      className="log-card-header"
+                      onClick={() => setExpandedLog(expandedLog === log.id ? null : log.id)}
+                    >
+                      <span className="log-card-prompt">{log.user_prompt.slice(0, 40)}{log.user_prompt.length > 40 ? '...' : ''}</span>
+                      <span className="log-card-meta">{log.created_at.slice(0, 16).replace('T', ' ')}</span>
+                    </div>
+                    {expandedLog === log.id && (
+                      <div className="log-card-body">
+                        <div className="log-field"><b>관리자:</b> {log.manager_name}</div>
+                        {log.plan_summary && <div className="log-field"><b>계획:</b> {log.plan_summary}</div>}
+                        <div className="log-field"><b>요청:</b> {log.user_prompt}</div>
+                        <div className="log-rating">
+                          <span>평점: </span>
+                          {[1,2,3,4,5].map(n => (
+                            <button
+                              key={n}
+                              className={`rating-star ${log.rating >= n ? 'filled' : ''}`}
+                              onClick={() => rateLog(log.id, n)}
+                            >★</button>
+                          ))}
+                          {log.rating && <span className="rating-label">{log.rating}/5</span>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
         </div>
       </div>
 
       {/* ── 우측 픽셀 맵 ── */}
       <div className="pixel-floor">
+
+        {/* ── SVG 오케스트레이션 연결선 오버레이 ── */}
+        {orchestrationLinks.length > 0 && (
+          <svg className="orchestration-svg">
+            <defs>
+              <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L8,3 z" fill="#d4a373" />
+              </marker>
+            </defs>
+            {orchestrationLinks.map((link, i) => {
+              const fromIdx = Object.keys(logs).indexOf(link.from);
+              const toIdx   = Object.keys(logs).indexOf(link.to);
+              if (fromIdx < 0 || toIdx < 0 || !gridConfig[fromIdx] || !gridConfig[toIdx]) return null;
+              const from = gridAreaCenter(gridConfig[fromIdx].agent);
+              const to   = gridAreaCenter(gridConfig[toIdx].agent);
+              // 도착점을 조금 앞에서 멈춤 (화살표가 겹치지 않도록)
+              const dx = to.x - from.x, dy = to.y - from.y;
+              const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+              const tx = to.x - (dx / dist) * 30;
+              const ty = to.y - (dy / dist) * 30;
+              return (
+                <g key={i}>
+                  <line
+                    x1={from.x} y1={from.y} x2={tx} y2={ty}
+                    className={`orch-line ${link.active ? 'active' : 'fading'}`}
+                    markerEnd="url(#arrow)"
+                  />
+                </g>
+              );
+            })}
+          </svg>
+        )}
 
         {/* 책상 + 모니터 + 키보드 + 마우스 */}
         {gridConfig.map((config, index) => (
@@ -441,6 +600,13 @@ function App() {
                 <div className="agent-task-tooltip">
                   <span className="tooltip-name">{aiName}</span>
                   <span className="tooltip-task">{taskText}</span>
+                </div>
+              )}
+
+              {/* 오케스트레이션 단계 뱃지 (관리자 전용) */}
+              {isManager && orchestrationPhase[aiName] && (
+                <div className={`orch-phase-badge ${orchestrationPhase[aiName]}`}>
+                  {orchestrationPhase[aiName] === 'planning'   ? '계획 수립 중...'  : '결과 종합 중...'}
                 </div>
               )}
 
