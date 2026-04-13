@@ -13,19 +13,28 @@ def _get_collection():
     return _memory_collection
 
 
-def save_memory(agent_id: int, task: str, result: str):
-    """에이전트의 작업 결과를 벡터 메모리에 저장"""
+def _agent_key(agent_id: int | str) -> str:
+    """agent_id가 문자열(에이전트 이름)이면 그대로, 숫자면 변환"""
+    return str(agent_id)
+
+
+# ── 이름 기반 API (agent_runner에서 사용) ─────────────────────────
+
+def save_memory_for(agent_name: str, task: str, result: str) -> None:
+    """에이전트 이름 기반으로 작업 결과를 벡터 메모리에 저장"""
     timestamp = datetime.now(timezone.utc).isoformat()
+    doc_id = f"agent_{agent_name}_{abs(hash(task + timestamp))}"
     _get_collection().add(
         documents=[f"task: {task}\nresult: {result}"],
-        metadatas=[{"agent_id": agent_id, "task": task, "saved_at": timestamp}],
-        ids=[f"agent_{agent_id}_{hash(task)}"]
+        metadatas=[{"agent_name": agent_name, "task": task, "saved_at": timestamp}],
+        ids=[doc_id]
     )
 
 
-def search_memory(agent_id: int, query: str, n_results: int = 3) -> list[dict]:
-    """과거 기억 중 현재 쿼리와 유사한 것 검색"""
-    count = get_memory_count(agent_id)
+def search_memory_for(agent_name: str, query: str, n_results: int = 3) -> list[dict]:
+    """에이전트 이름 기반으로 과거 기억 중 현재 쿼리와 유사한 것 검색"""
+    existing = _get_collection().get(where={"agent_name": agent_name})
+    count = len(existing["ids"])
     if count == 0:
         return []
 
@@ -33,7 +42,7 @@ def search_memory(agent_id: int, query: str, n_results: int = 3) -> list[dict]:
     results = _get_collection().query(
         query_texts=[query],
         n_results=actual_n,
-        where={"agent_id": agent_id},
+        where={"agent_name": agent_name},
         include=["documents", "metadatas", "distances"]
     )
 
@@ -54,16 +63,38 @@ def search_memory(agent_id: int, query: str, n_results: int = 3) -> list[dict]:
     return memories
 
 
-def delete_memory(agent_id: int) -> int:
-    """특정 에이전트의 모든 메모리 삭제. 삭제된 개수 반환"""
-    existing = _get_collection().get(where={"agent_id": agent_id})
+def delete_memory_for(agent_name: str) -> int:
+    """에이전트 이름 기반으로 모든 메모리 삭제. 삭제된 개수 반환"""
+    existing = _get_collection().get(where={"agent_name": agent_name})
     ids_to_delete = existing["ids"]
     if ids_to_delete:
         _get_collection().delete(ids=ids_to_delete)
     return len(ids_to_delete)
 
 
+def get_memory_count_for(agent_name: str) -> int:
+    """에이전트 이름 기반으로 저장된 메모리 개수 반환"""
+    existing = _get_collection().get(where={"agent_name": agent_name})
+    return len(existing["ids"])
+
+
+# ── 숫자 ID 기반 API (하위 호환) ──────────────────────────────────
+
+def save_memory(agent_id: int, task: str, result: str):
+    """에이전트의 작업 결과를 벡터 메모리에 저장"""
+    save_memory_for(str(agent_id), task, result)
+
+
+def search_memory(agent_id: int, query: str, n_results: int = 3) -> list[dict]:
+    """과거 기억 중 현재 쿼리와 유사한 것 검색"""
+    return search_memory_for(str(agent_id), query, n_results)
+
+
+def delete_memory(agent_id: int) -> int:
+    """특정 에이전트의 모든 메모리 삭제. 삭제된 개수 반환"""
+    return delete_memory_for(str(agent_id))
+
+
 def get_memory_count(agent_id: int) -> int:
     """특정 에이전트의 저장된 메모리 개수 반환"""
-    existing = _get_collection().get(where={"agent_id": agent_id})
-    return len(existing["ids"])
+    return get_memory_count_for(str(agent_id))
