@@ -1,0 +1,87 @@
+.desk-wrapper {
+  position: relative;
+  width: 200px;
+  height: 200px;
+  margin: auto;
+  background: transparent;
+  align-self: center;
+  justify-self: center;
+}
+
+.desk-item {
+  width: 200px;
+  height: 200px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  background: transparent;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
+}
+
+.monitor-item {
+  width: 150px;
+  height: 150px;
+  position: absolute;
+  top: -30px;
+  left: 20px;
+  z-index: 20;
+  background: transparent;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
+}
+
+.monitor-item-flipped {
+  width: 150px;
+  height: 150px;
+  position: absolute;
+  top: -10px;
+  left: 35px;
+  z-index: 20;
+  background: transparent;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
+}
+
+.keyboard-item {
+  width: 200px;
+  height: 180px;
+  position: absolute;
+  top: 35px;
+  left: 13px;
+  z-index: 20;
+  background: transparent;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
+}
+
+.mouse-item {
+  width: 100px;
+  height: 80px;
+  position: absolute;
+  top: 40px;
+  left: 100px;
+  z-index: 20;
+  background: transparent;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
+}
+
+.mouse-item-flipped {
+  width: 100px;
+  height: 80px;
+  position: absolute;
+  top: 35px;
+  left: 5px;
+  z-index: 20;
+  background: transparent;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center;
+}

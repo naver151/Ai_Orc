@@ -1,18 +1,58 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import './styles/globals.css'
 import LandingPage from './components/LandingPage'
+import UserFormPage from './components/UserFormPage'
 import ChatPage from './components/ChatPage'
 import InfoModal from './components/InfoModal'
 
+function loadSession() {
+  try {
+    const saved = localStorage.getItem('aiorc_session')
+    if (saved) return JSON.parse(saved)
+  } catch {}
+  return null
+}
+
+function saveSession(page, user) {
+  try {
+    localStorage.setItem('aiorc_session', JSON.stringify({ page, user }))
+  } catch {}
+}
+
 export default function App() {
-  const [page, setPage] = useState('landing')
+  const session = loadSession()
+  const [page, setPage] = useState(session?.page ?? 'landing')
   const [modalOpen, setModalOpen] = useState(false)
   const [expanding, setExpanding] = useState(false)
   const [expandStyle, setExpandStyle] = useState({})
+  const [user, setUser] = useState(session?.user ?? null)
+  const [theme, setTheme] = useState(() => localStorage.getItem('aiorc_theme') ?? 'dark')
+  const [fontSize, setFontSize] = useState(() => localStorage.getItem('aiorc_font_size') ?? 'medium')
   const appRef = useRef(null)
 
-  const handleStart = (btnEl) => {
-    if (!btnEl) return
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('aiorc_theme', theme)
+  }, [theme])
+
+  useEffect(() => {
+    if (fontSize === 'medium') {
+      document.documentElement.removeAttribute('data-font-size')
+    } else {
+      document.documentElement.setAttribute('data-font-size', fontSize)
+    }
+    localStorage.setItem('aiorc_font_size', fontSize)
+  }, [fontSize])
+
+  const FONT_SIZES = ['small', 'medium', 'large', 'xl']
+  const FONT_LABELS = { small: 'S', medium: 'M', large: 'L', xl: 'XL' }
+  const cycleFontSize = () =>
+    setFontSize(cur => FONT_SIZES[(FONT_SIZES.indexOf(cur) + 1) % FONT_SIZES.length])
+
+  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark')
+
+  const runExpandAnim = (btnEl, onDone) => {
+    if (!btnEl) { onDone(); return }
     const btnRect = btnEl.getBoundingClientRect()
     const appRect = appRef.current.getBoundingClientRect()
 
@@ -44,7 +84,7 @@ export default function App() {
         }))
 
         setTimeout(() => {
-          setPage('chat')
+          onDone()
           setExpandStyle(prev => ({
             ...prev,
             opacity: 0,
@@ -59,6 +99,31 @@ export default function App() {
     })
   }
 
+  // 랜딩 → 정보 입력 폼
+  const handleStart = (btnEl) => {
+    runExpandAnim(btnEl, () => {
+      setPage('userform')
+      saveSession('userform', user)
+    })
+  }
+
+  // 정보 입력 완료 → 채팅
+  const handleUserFormSubmit = (userData) => {
+    // 사용자별 고유 ID 생성 (최초 1회)
+    const uid = `u${Date.now()}${Math.random().toString(36).slice(2, 6)}`
+    const userWithId = { ...userData, uid }
+    setUser(userWithId)
+    setPage('chat')
+    saveSession('chat', userWithId)
+  }
+
+  // 채팅 → 랜딩으로 돌아갈 때 세션 초기화
+  const handleBack = () => {
+    setPage('landing')
+    setUser(null)
+    saveSession('landing', null)
+  }
+
   return (
     <div ref={appRef} style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', background: 'var(--bg)' }}>
 
@@ -66,6 +131,8 @@ export default function App() {
         <LandingPage
           onStart={handleStart}
           onInfo={() => setModalOpen(true)}
+          theme={theme}
+          onThemeToggle={toggleTheme}
         />
       )}
 
@@ -79,8 +146,20 @@ export default function App() {
         }} />
       )}
 
+      {page === 'userform' && (
+        <UserFormPage onSubmit={handleUserFormSubmit} theme={theme} onThemeToggle={toggleTheme} />
+      )}
+
       {page === 'chat' && (
-        <ChatPage onBack={() => setPage('landing')} />
+        <ChatPage
+          user={user}
+          onBack={handleBack}
+          theme={theme}
+          onThemeToggle={toggleTheme}
+          fontSize={fontSize}
+          fontLabel={FONT_LABELS[fontSize]}
+          onFontSizeCycle={cycleFontSize}
+        />
       )}
 
       <InfoModal open={modalOpen} onClose={() => setModalOpen(false)} />
