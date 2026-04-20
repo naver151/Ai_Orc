@@ -1,599 +1,311 @@
-import { useEffect, useRef } from 'react'
-import styles from './AgentWorkspace.module.css'
+/**
+ * AgentWorkspace — WebSocket 기반 멀티에이전트 오케스트레이션 UI
+ *
+ * ✅ Point 2 (Observability):
+ *   - WebSocket으로 백엔드 LangGraph 오케스트레이션과 직접 연결
+ *   - 에이전트별 실시간 currentTask 툴팁
+ *   - Pause / Resume / Kill 인라인 제어 버튼
+ *   - 리뷰어 AI 결과 패널 (review_start → review_log → review_done)
+ *
+ * ✅ Point 3 (Non-LLM Hybrid):
+ *   - 이미지 업로드 → /vision/analyze SSE → YOLO + LLM 파이프라인
+ */
 
-const sleep = ms => new Promise(r => setTimeout(r, ms))
+import { useState, useRef, useEffect, useCallback } from 'react'
+import styles from './AgentWorkspace.module.css'
+import { wsClient } from '../utils/wsClient'
 
 const BACKEND = 'http://localhost:8000'
 
-// ── 파일명 추론 ────────────────────────────────────────────
-function inferFilename(lang) {
-  const map = {
-    javascript: 'app.js', js: 'app.js',
-    typescript: 'app.ts', ts: 'app.ts',
-    jsx: 'App.jsx', tsx: 'App.tsx',
-    python: 'script.py', py: 'script.py',
-    css: 'styles.css', html: 'index.html',
-    java: 'Main.java', go: 'main.go',
-    rust: 'main.rs', bash: 'script.sh', sh: 'script.sh',
-    sql: 'query.sql', json: 'data.json',
-    yaml: 'config.yaml', yml: 'config.yml',
-  }
-  return map[lang?.toLowerCase()] || `file.${lang || 'txt'}`
-}
+// ── 에이전트 상태 카드 ─────────────────────────────────────
 
-// ── 코드 블록 파싱 ─────────────────────────────────────────
-function parseCodeBlocks(text) {
-  const blocks = []
-  const regex = /```(\w*)\n([\s\S]*?)```/g
-  let lastIndex = 0
-  let match
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      blocks.push({ type: 'text', content: text.slice(lastIndex, match.index) })
-    }
-    const lang = match[1] || 'text'
-    const rawCode = match[2]
-    const lines = rawCode.split('\n')
-    const firstLine = lines[0]?.trim() ?? ''
-    let filename = null
-    let code = rawCode
-    const commentMatch = firstLine.match(/^(?:\/\/|#)\s*(.+)/)
-    if (commentMatch) {
-      const candidate = commentMatch[1].trim()
-      if (candidate.includes('.') || candidate.includes('/')) {
-        filename = candidate
-        code = lines.slice(1).join('\n').replace(/^\n/, '')
-      }
-    }
-    if (!filename) filename = inferFilename(lang)
-    blocks.push({ type: 'code', lang, filename, content: code })
-    lastIndex = match.index + match[0].length
-  }
-  if (lastIndex < text.length) {
-    blocks.push({ type: 'text', content: text.slice(lastIndex) })
-  }
-  return blocks
-}
+function AgentCard({ agent, onPause, onResume, onKill }) {
+  const [hovered, setHovered] = useState(false)
+  const isPaused    = agent.status === 'STOPPED'
+  const isRunning   = agent.status === 'RUNNING'
+  const isCompleted = agent.status === 'COMPLETED'
 
-// ── 결과를 파일 뷰어 형태로 렌더링 ────────────────────────
-function renderResult(container, text, stylesModule) {
-  const s = stylesModule
-  const blocks = parseCodeBlocks(text)
-  container.innerHTML = ''
+  return (
+    <div
+      className={`${styles.agentCard} ${isRunning ? styles.cardRunning : ''} ${isCompleted ? styles.cardDone : ''}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div className={`${styles.aDot} ${isRunning ? styles.pulse : ''}`} style={{ background: agent.color }} />
 
-  blocks.forEach(block => {
-    if (block.type === 'text') {
-      const trimmed = block.content.trim()
-      if (!trimmed) return
-      const p = document.createElement('p')
-      p.className = s.resultText
-      p.textContent = trimmed
-      container.appendChild(p)
-      return
-    }
+      <div className={styles.aInfo}>
+        <div className={styles.aName}>{agent.name}</div>
+        <div className={styles.aAi} style={{ color: agent.color }}>{agent.provider?.toUpperCase() ?? 'AI'}</div>
 
-    const viewer = document.createElement('div')
-    viewer.className = s.fileViewer
-
-    const header = document.createElement('div')
-    header.className = s.fileViewerHeader
-
-    const pathParts = block.filename.split('/')
-    const breadcrumb = document.createElement('div')
-    breadcrumb.className = s.filePath
-    pathParts.forEach((part, i) => {
-      const span = document.createElement('span')
-      span.className = i === pathParts.length - 1 ? s.filePathFile : s.filePathDir
-      span.textContent = part
-      breadcrumb.appendChild(span)
-      if (i < pathParts.length - 1) {
-        const sep = document.createElement('span')
-        sep.className = s.filePathSep
-        sep.textContent = ' / '
-        breadcrumb.appendChild(sep)
-      }
-    })
-    header.appendChild(breadcrumb)
-
-    const copyBtn = document.createElement('button')
-    copyBtn.className = s.copyBtn
-    copyBtn.textContent = 'Copy'
-    copyBtn.onclick = () => {
-      navigator.clipboard.writeText(block.content).then(() => {
-        copyBtn.textContent = 'Copied!'
-        setTimeout(() => { copyBtn.textContent = 'Copy' }, 1500)
-      })
-    }
-    header.appendChild(copyBtn)
-    viewer.appendChild(header)
-
-    const body = document.createElement('div')
-    body.className = s.fileViewerBody
-
-    const lineNums = document.createElement('div')
-    lineNums.className = s.lineNums
-
-    const codeContent = document.createElement('div')
-    codeContent.className = s.codeContent
-
-    const codeLines = block.content.split('\n')
-    if (codeLines[codeLines.length - 1] === '') codeLines.pop()
-
-    codeLines.forEach((line, i) => {
-      const numEl = document.createElement('div')
-      numEl.className = s.lineNum
-      numEl.textContent = i + 1
-      lineNums.appendChild(numEl)
-
-      const lineEl = document.createElement('div')
-      lineEl.className = s.codeLine
-      lineEl.textContent = line === '' ? '\u00A0' : line
-      codeContent.appendChild(lineEl)
-    })
-
-    body.appendChild(lineNums)
-    body.appendChild(codeContent)
-    viewer.appendChild(body)
-    container.appendChild(viewer)
-  })
-}
-
-// ── 에이전트 작업 실행 스트리밍 ──────────────────────────────
-async function streamAgentOutput(originalRequest, agentTask, roleKey, onChunk) {
-  const res = await fetch(`${BACKEND}/agent/execute`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      original_request: originalRequest,
-      agent_task: agentTask,
-      role_key: roleKey,
-    }),
-  })
-  if (!res.ok) throw new Error(`에이전트 실행 오류: ${res.status}`)
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    const lines = buf.split('\n')
-    buf = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      try {
-        const data = JSON.parse(line.slice(6))
-        if (data.type === 'text') onChunk(data.chunk)
-        else if (data.type === 'error') { const e = new Error(data.message); e.isServerError = true; throw e }
-      } catch (e) {
-        if (e.isServerError) throw e
-      }
-    }
-  }
-}
-
-// ── 결과 패널 표시 헬퍼 ────────────────────────────────────
-function showResult(result, stream, work, styles, agents, lastAgentOutput) {
-  // 콘텐츠 먼저 설정
-  const resultContent = result.querySelector(`.${styles.resultContent}`)
-  if (resultContent) {
-    if (lastAgentOutput) {
-      renderResult(resultContent, lastAgentOutput, styles)
-    } else {
-      const p = document.createElement('p')
-      p.className = styles.resultText
-      p.textContent = `${agents.length}개의 에이전트가 협업하여 작업을 완료했습니다.`
-      resultContent.appendChild(p)
-    }
-  }
-
-  // 오버레이 위치 먼저 적용 후 페이드인
-  result.classList.add(styles.resultOverlay)
-  result.scrollTop = 0
-
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      result.style.opacity = '1'
-      result.style.transition = 'opacity 0.4s ease'
-    })
-  })
-
-  // 로그확인 버튼 추가
-  const header = work.querySelector(`.${styles.workHeader}`)
-  if (header && !header.querySelector(`.${styles.logViewBtn}`)) {
-    const logBtn = document.createElement('button')
-    logBtn.className = styles.logViewBtn
-    logBtn.textContent = '로그 확인'
-    header.appendChild(logBtn)
-
-    let logVisible = false
-    logBtn.addEventListener('click', () => {
-      logVisible = !logVisible
-      if (logVisible) {
-        result.style.opacity = '0'
-        result.style.pointerEvents = 'none'
-        result.style.zIndex = '-1'
-        logBtn.textContent = '결과 보기'
-        stream.scrollTop = stream.scrollHeight
-      } else {
-        result.style.opacity = '1'
-        result.style.pointerEvents = 'auto'
-        result.style.zIndex = '10'
-        logBtn.textContent = '로그 확인'
-      }
-    })
-  }
-}
-
-export default function AgentWorkspace({ agents, request, onDone, instant = false }) {
-  const sceneRef   = useRef(null)
-  const dotContRef = useRef(null)
-  const workRef    = useRef(null)
-  const listRef    = useRef(null)
-  const streamRef  = useRef(null)
-  const resultRef  = useRef(null)
-  const runningRef = useRef(false)
-
-  useEffect(() => {
-    if (!agents?.length || runningRef.current) return
-    runningRef.current = true
-    runAnimation(request)
-  }, [agents])
-
-  async function runAnimation(taskRequest) {
-    const scene   = sceneRef.current
-    const dotCont = dotContRef.current
-    const work    = workRef.current
-    const list    = listRef.current
-    const stream  = streamRef.current
-    const result  = resultRef.current
-    if (!scene || !dotCont || !work || !list || !stream || !result) return
-
-    const { width: W, height: H } = scene.getBoundingClientRect()
-    const cx = W / 2
-    const cy = H / 2
-    const count = agents.length
-
-    dotCont.innerHTML = ''
-    list.innerHTML = ''
-    stream.innerHTML = ''
-
-    // result 초기화
-    result.style.opacity = '0'
-    result.style.transition = ''
-    result.style.pointerEvents = ''
-    result.style.zIndex = ''
-    result.className = styles.resultPanel
-
-    if (!instant) {
-      // ── 1. 도트 생성 ──────────────────────────────────
-      const dots = [], lbls = [], ovs = []
-      agents.forEach((a, i) => {
-        const dot = document.createElement('div')
-        dot.className = styles.dotEl
-        dot.style.cssText = `background:${a.color};left:${cx}px;top:${cy}px;`
-        dotCont.appendChild(dot); dots.push(dot)
-
-        const lbl = document.createElement('div')
-        lbl.className = styles.dotLbl
-        lbl.textContent = a.name
-        lbl.style.cssText = `color:${a.color};left:${cx}px;top:${cy + 24}px;`
-        dotCont.appendChild(lbl); lbls.push(lbl)
-
-        const ov = document.createElement('div')
-        ov.className = styles.dotOv
-        ov.style.cssText = `background:${a.color};left:${cx}px;top:${cy}px;z-index:${count - i};`
-        dotCont.appendChild(ov); ovs.push(ov)
-      })
-
-      // ── 2. 도트 등장 ──────────────────────────────────
-      for (let i = 0; i < count; i++) {
-        await sleep(i * 110)
-        dots[i].style.transition = 'transform 0.5s cubic-bezier(0.34,1.56,0.64,1)'
-        dots[i].style.transform  = 'translate(-50%,-50%) scale(1)'
-      }
-      await sleep(450)
-
-      // ── 3. 도트 펼침 ──────────────────────────────────
-      const spread = Math.min(300, W * 0.68)
-      const xs = count === 1
-        ? [cx]
-        : Array.from({ length: count }, (_, i) => cx - spread / 2 + (spread / (count - 1)) * i)
-
-      for (let i = 0; i < count; i++) {
-        dots[i].style.transition = 'left 0.65s cubic-bezier(0.76,0,0.24,1)'
-        dots[i].style.left = xs[i] + 'px'
-        ovs[i].style.left  = xs[i] + 'px'
-        lbls[i].style.left = xs[i] + 'px'
-      }
-      await sleep(750)
-      lbls.forEach(l => { l.style.transition = 'opacity 0.3s'; l.style.opacity = '0.85' })
-      await sleep(300)
-
-      // ── 4. 도트 협업 바운스 ───────────────────────────
-      const B = 20, P = 360
-      for (let c = 0; c < 3; c++) {
-        dots.forEach((d, i) => setTimeout(() => {
-          d.style.transition = `top ${P}ms cubic-bezier(0.4,0,0.2,1)`
-          d.style.top = (cy - B) + 'px'
-          lbls[i].style.transition = `top ${P}ms`
-          lbls[i].style.top = (cy - B + 24) + 'px'
-        }, i * 70))
-        await sleep(P + count * 70 + 60)
-
-        dots.forEach((d, i) => setTimeout(() => {
-          d.style.transition = `top ${P}ms cubic-bezier(0.4,0,0.2,1)`
-          d.style.top = (cy + B) + 'px'
-          lbls[i].style.top = (cy + B + 24) + 'px'
-        }, i * 70))
-        await sleep(P + count * 70 + 60)
-
-        dots.forEach((d, i) => setTimeout(() => {
-          d.style.transition = `top ${P * 0.7}ms cubic-bezier(0.4,0,0.2,1)`
-          d.style.top = cy + 'px'
-          lbls[i].style.top = (cy + 24) + 'px'
-        }, i * 55))
-        await sleep(P * 0.7 + count * 55 + 100)
-      }
-
-      lbls.forEach(l => { l.style.transition = 'opacity 0.25s'; l.style.opacity = '0' })
-      await sleep(300)
-
-      // ── 5. 에이전트 패널 생성 ─────────────────────────
-      const panelEls = []
-      agents.forEach((a) => {
-        const el = document.createElement('div')
-        el.className = styles.agentItem
-        el.innerHTML = `
-          <div class="${styles.aDot} ${styles.pulse}" style="background:${a.color}"></div>
-          <div class="${styles.aInfo}">
-            <div class="${styles.aName}">${a.name}</div>
-            <div class="${styles.aAi}" style="color:${a.color}">${a.aiType?.toUpperCase() ?? 'AI'}</div>
-            ${a.task ? `<div class="${styles.aTask}">${a.task}</div>` : ''}
+        {/* 현재 작업 — Point 2 핵심 */}
+        {agent.currentTask && (
+          <div className={styles.currentTask} title={agent.currentTask}>
+            ⚡ {agent.currentTask.length > 42 ? agent.currentTask.slice(0, 42) + '…' : agent.currentTask}
           </div>
-          <div class="${styles.aSpinner}" style="border-top-color:${a.color}"></div>
-        `
-        list.appendChild(el)
-        panelEls.push(el)
-      })
+        )}
 
-      // ── 6. 도트 → 배경 전환 ───────────────────────────
-      const maxDim = Math.sqrt(W * W + H * H) * 2.2
-      const sv = maxDim / 20
-
-      for (let i = 0; i < count; i++) {
-        dots[i].style.transition = 'transform 0.18s ease'
-        dots[i].style.transform  = 'translate(-50%,-50%) scale(2.8)'
-        await sleep(130)
-        dots[i].style.transform  = 'translate(-50%,-50%) scale(0)'
-        ovs[i].style.transition  = 'transform 0.7s cubic-bezier(0.76,0,0.24,1)'
-        ovs[i].style.transform   = `translate(-50%,-50%) scale(${sv})`
-        await sleep(i === count - 1 ? 420 : 160)
-      }
-      await sleep(200)
-
-      work.style.opacity = '1'
-      work.style.pointerEvents = 'all'
-      const dotSceneEl = scene.querySelector(`.${styles.dotScene}`)
-      dotSceneEl.style.opacity = '0'
-      dotSceneEl.style.pointerEvents = 'none'
-      await sleep(300)
-
-      // ── 7. 에이전트 패널 등장 ─────────────────────────
-      for (let i = 0; i < count; i++) {
-        panelEls[i].classList.add(styles.show)
-        await sleep(80)
-      }
-      await sleep(200)
-
-      const liveTag = work.querySelector(`.${styles.liveTag}`)
-      if (liveTag) liveTag.classList.add(styles.liveShow)
-
-      // ── 8. 에이전트별 실시간 작업 실행 ──────────────
-      await runAgents(taskRequest, agents, panelEls, stream, work, result)
-
-    } else {
-      // ── instant 모드: 도트 없이 바로 로그 화면 ────────
-      const dotSceneEl = scene.querySelector(`.${styles.dotScene}`)
-      if (dotSceneEl) {
-        dotSceneEl.style.opacity = '0'
-        dotSceneEl.style.pointerEvents = 'none'
-      }
-      work.style.opacity = '1'
-      work.style.pointerEvents = 'all'
-
-      // 에이전트 패널 생성 + 즉시 표시
-      const panelEls = []
-      agents.forEach((a) => {
-        const el = document.createElement('div')
-        el.className = `${styles.agentItem} ${styles.show}`
-        el.innerHTML = `
-          <div class="${styles.aDot} ${styles.pulse}" style="background:${a.color}"></div>
-          <div class="${styles.aInfo}">
-            <div class="${styles.aName}">${a.name}</div>
-            <div class="${styles.aAi}" style="color:${a.color}">${a.aiType?.toUpperCase() ?? 'AI'}</div>
-            ${a.task ? `<div class="${styles.aTask}">${a.task}</div>` : ''}
+        {/* 진행률 바 */}
+        {isRunning && (
+          <div className={styles.agentProgress}>
+            <div className={styles.agentProgressFill} style={{ width: `${agent.progress ?? 0}%`, background: agent.color }} />
           </div>
-          <div class="${styles.aSpinner}" style="border-top-color:${a.color}"></div>
-        `
-        list.appendChild(el)
-        panelEls.push(el)
-      })
+        )}
+      </div>
 
-      const liveTag = work.querySelector(`.${styles.liveTag}`)
-      if (liveTag) liveTag.classList.add(styles.liveShow)
+      {/* 제어 버튼 — Point 2 핵심 */}
+      <div className={`${styles.controls} ${hovered || isPaused ? styles.controlsVisible : ''}`}>
+        {isRunning  && <button className={`${styles.ctrlBtn} ${styles.pauseBtn}`}  onClick={() => onPause(agent.name)}  title="일시 정지">⏸</button>}
+        {isPaused   && <button className={`${styles.ctrlBtn} ${styles.resumeBtn}`} onClick={() => onResume(agent.name)} title="재개">▶</button>}
+        {!isCompleted && <button className={`${styles.ctrlBtn} ${styles.killBtn}`} onClick={() => onKill(agent.name)}   title="강제 종료">✕</button>}
+        {isCompleted  && <span className={styles.aCheck} style={{ color: agent.color }}>✓</span>}
+      </div>
+    </div>
+  )
+}
 
-      // ── 에이전트별 실시간 작업 실행 ──────────────────
-      await runAgents(taskRequest, agents, panelEls, stream, work, result)
-    }
+// ── 리뷰 패널 — Point 2 핵심 ──────────────────────────────
+
+function ReviewPanel({ review }) {
+  if (!review.started) return (
+    <div className={styles.reviewEmpty}>리뷰어가 활성화되지 않았거나 아직 결과가 없습니다.</div>
+  )
+
+  const verdictColor = review.verdict === 'PASS' ? '#4ade80' : review.verdict === 'FAIL' ? '#f87171' : '#a78bfa'
+
+  return (
+    <div className={styles.reviewPanel}>
+      <div className={styles.reviewHeader}>
+        <span className={styles.reviewIcon}>🔍</span>
+        <span className={styles.reviewTitle}>리뷰어 AI 검토</span>
+        {review.reviewer && <span className={styles.reviewerBadge}>{review.reviewer.toUpperCase()}</span>}
+        {review.verdict && (
+          <span className={styles.verdictBadge} style={{ background: verdictColor + '22', color: verdictColor, borderColor: verdictColor + '55' }}>
+            {review.verdict}
+          </span>
+        )}
+        {review.verdict === 'FAIL' && review.retry > 0 && (
+          <span className={styles.retryBadge}>재시도 {review.retry}/{review.maxRetries}</span>
+        )}
+      </div>
+      <div className={styles.reviewBody}>{review.text || <span className={styles.reviewWaiting}>리뷰 생성 중...</span>}</div>
+    </div>
+  )
+}
+
+// ── Vision 파이프라인 패널 — Point 3 핵심 ─────────────────
+
+function VisionPanel() {
+  const [imagePath, setImagePath]   = useState('')
+  const [question, setQuestion]     = useState('')
+  const [uploading, setUploading]   = useState(false)
+  const [analyzing, setAnalyzing]   = useState(false)
+  const [yoloResult, setYoloResult] = useState(null)
+  const [llmResult, setLlmResult]   = useState('')
+  const [previewUrl, setPreviewUrl] = useState(null)
+  const fileRef = useRef(null)
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setPreviewUrl(URL.createObjectURL(file))
+    setUploading(true); setYoloResult(null); setLlmResult('')
+    const form = new FormData()
+    form.append('file', file)
+    try {
+      const res  = await fetch(`${BACKEND}/upload`, { method: 'POST', body: form })
+      const data = await res.json()
+      setImagePath(data.path)
+    } catch (err) { console.error('업로드 실패:', err) }
+    finally { setUploading(false) }
   }
 
-  // ── 에이전트 스트리밍 공통 로직 ──────────────────────────
-  async function runAgents(taskRequest, agents, panelEls, stream, work, result) {
-    const count = agents.length
-    const progFill = work.querySelector(`.${styles.progFill}`)
-    const progText = work.querySelector(`.${styles.progText}`)
-    const liveTag  = work.querySelector(`.${styles.liveTag}`)
-    let lastAgentOutput = ''
-
-    for (let i = 0; i < count; i++) {
-      const a = agents[i]
-      panelEls[i].classList.add(styles.running)
-
-      const section = document.createElement('div')
-      section.className = styles.section
-      section.innerHTML = `
-        <div class="${styles.sectionLabel}">
-          <div class="${styles.sectionDot}" style="background:${a.color}"></div>
-          <span class="${styles.sectionName}" style="color:${a.color}cc">${a.name}</span>
-          <span class="${styles.sectionBadge}" style="background:${a.color}18;color:${a.color}">${a.aiType?.toUpperCase() ?? 'AI'}</span>
-          ${i < count - 1 ? `<span class="${styles.sectionArrow}">↓ 다음으로 전달</span>` : ''}
-        </div>
-        ${a.task ? `<div class="${styles.sectionTask}" style="border-left-color:${a.color}40">배정 업무: ${a.task}</div>` : ''}
-        <div class="${styles.sectionBody}" id="sb-${i}"></div>
-      `
-      stream.appendChild(section)
-      await sleep(30)
-      section.classList.add(styles.sectionShow)
-      stream.scrollTop = stream.scrollHeight
-
-      const sb = document.getElementById(`sb-${i}`)
-
-      if (a.task) {
-        let agentFullText = ''
-        let lineBuffer = ''
-        let currentLineEl = null
-
-        const flushLine = (text, isLive = false) => {
-          if (isLive) {
-            if (!currentLineEl) {
-              currentLineEl = document.createElement('div')
-              currentLineEl.className = `${styles.logLine} ${styles.logShow}`
-              currentLineEl.style.color = `${a.color}99`
-              sb.appendChild(currentLineEl)
-            }
-            currentLineEl.textContent = text
-          } else {
-            if (currentLineEl) {
-              currentLineEl.style.color = a.color
-              if (text.trim()) currentLineEl.textContent = text
-              currentLineEl = null
-            } else if (text.trim()) {
-              const el = document.createElement('div')
-              el.className = `${styles.logLine} ${styles.logShow}`
-              el.style.color = a.color
-              el.textContent = text
-              sb.appendChild(el)
-            }
-          }
-          stream.scrollTop = stream.scrollHeight
-        }
-
+  const handleAnalyze = async () => {
+    if (!imagePath) return
+    setAnalyzing(true); setYoloResult(null); setLlmResult('')
+    const res = await fetch(`${BACKEND}/vision/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_path: imagePath, question: question || undefined, provider: 'github' }),
+    })
+    const reader = res.body.getReader(); const decoder = new TextDecoder(); let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
         try {
-          await streamAgentOutput(taskRequest, a.task, a.roleKey, (chunk) => {
-            agentFullText += chunk
-            lineBuffer += chunk
-            const parts = lineBuffer.split('\n')
-            if (parts.length > 1) {
-              for (let j = 0; j < parts.length - 1; j++) flushLine(parts[j], false)
-              lineBuffer = parts[parts.length - 1]
-              if (lineBuffer) flushLine(lineBuffer, true)
-            } else {
-              if (lineBuffer.trim()) flushLine(lineBuffer, true)
-            }
-          })
-          if (lineBuffer.trim()) flushLine(lineBuffer, false)
-        } catch (e) {
-          flushLine(`오류: ${e.message}`, false)
-        }
-
-        lastAgentOutput = agentFullText
-      }
-
-      if (progFill) progFill.style.width = Math.round(((i + 1) / count) * 100) + '%'
-      if (progText) progText.textContent = `${i + 1} / ${count}`
-
-      panelEls[i].classList.remove(styles.running)
-      panelEls[i].classList.add(styles.done)
-      const spinner = panelEls[i].querySelector(`.${styles.aSpinner}`)
-      if (spinner) {
-        spinner.outerHTML = `<span class="${styles.aCheck}" style="color:${a.color}">✓</span>`
-      }
-
-      if (a.handoffMsg && i < count - 1) {
-        const nextColor = agents[i + 1].color
-        const banner = document.createElement('div')
-        banner.className = styles.handoff
-        banner.style.cssText = `background:${nextColor}10;border:1px solid ${nextColor}30;color:${nextColor};`
-        banner.innerHTML = `<span class="${styles.handoffArrow}">→</span><span>${a.handoffMsg}</span>`
-        stream.appendChild(banner)
-        await sleep(30)
-        banner.classList.add(styles.handoffShow)
-        stream.scrollTop = stream.scrollHeight
-        await sleep(400)
+          const data = JSON.parse(line.slice(6))
+          if (data.stage === 'yolo') setYoloResult(data.result)
+          if (data.stage === 'llm')  setLlmResult(prev => prev + data.chunk)
+          if (data.stage === 'done') setAnalyzing(false)
+        } catch {}
       }
     }
-
-    // ── 완료 ──
-    if (liveTag) liveTag.classList.remove(styles.liveShow)
-    if (progText) progText.textContent = '완료 ✓'
-    if (progFill) progFill.style.background = 'var(--teal)'
-
-    await sleep(400)
-    showResult(result, stream, work, styles, agents, lastAgentOutput)
+    setAnalyzing(false)
   }
 
   return (
-    <div ref={sceneRef} className={styles.scene}>
-
-      {/* 도트 애니메이션 씬 */}
-      <div className={styles.dotScene}>
-        <div ref={dotContRef} className={styles.dotContainer} />
+    <div className={styles.visionPanel}>
+      <div className={styles.visionHeader}>
+        <span>👁 Vision 분석</span>
+        <span className={styles.visionBadge}>YOLO + LLM</span>
       </div>
 
-      {/* 워크 씬 */}
-      <div ref={workRef} className={styles.workScene}>
-
-        {/* 상단 헤더 */}
-        <div className={styles.workHeader} />
-
-        {/* 본문 */}
-        <div className={styles.workBody}>
-
-          {/* 왼쪽: 에이전트 목록 */}
-          <div className={styles.agentList}>
-            <div className={styles.listHeader}>에이전트</div>
-            <div ref={listRef} className={styles.listItems} />
-          </div>
-
-          {/* 오른쪽: 스트림 + 결과 */}
-          <div className={styles.streamArea}>
-            <div className={styles.streamHeader}>
-              <div className={styles.streamTitle}>협업 스트림</div>
-              <div className={styles.liveTag}>
-                <div className={styles.liveDot} />
-                LIVE
-              </div>
-              <div className={styles.progText} />
+      <div className={styles.uploadZone} onClick={() => fileRef.current?.click()}>
+        {previewUrl
+          ? <img src={previewUrl} alt="preview" className={styles.uploadPreview} />
+          : <div className={styles.uploadPlaceholder}>
+              <span className={styles.uploadIcon}>📁</span>
+              <span>이미지를 클릭하여 업로드</span>
+              <span className={styles.uploadHint}>JPG, PNG, WebP 지원</span>
             </div>
+        }
+        {uploading && <div className={styles.uploadLoading}>업로드 중...</div>}
+      </div>
+      <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileChange} />
 
-            <div ref={streamRef} className={styles.streamBody} />
+      <input className={styles.visionInput} type="text" placeholder="분석 질문 (선택): 예) 위험 요소가 있나요?" value={question} onChange={e => setQuestion(e.target.value)} />
 
-            <div className={styles.progressBar}>
-              <div className={styles.progFill} />
+      <button className={styles.visionBtn} onClick={handleAnalyze} disabled={!imagePath || analyzing}>
+        {analyzing ? '분석 중...' : '🔍 YOLO + LLM 분석 시작'}
+      </button>
+
+      {yoloResult && (
+        <div className={styles.yoloResult}>
+          <div className={styles.yoloTitle}>YOLO 탐지 결과 — 총 <strong>{yoloResult.total}</strong>개</div>
+          {(yoloResult.summary ?? []).map((s, i) => <div key={i} className={styles.yoloItem}>• {s}</div>)}
+        </div>
+      )}
+
+      {llmResult && (
+        <div className={styles.llmResult}>
+          <div className={styles.llmTitle}>LLM 해석</div>
+          <div className={styles.llmText}>{llmResult}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── 메인 컴포넌트 ──────────────────────────────────────────
+
+export default function AgentWorkspace({ agents, request, onDone, reviewerProvider = '' }) {
+  const [agentStates, setAgentStates] = useState(() =>
+    Object.fromEntries(agents.map(a => [a.name, {
+      name: a.name, color: a.color,
+      provider: a.provider ?? a.aiType ?? 'github',
+      status: 'READY', progress: 0, currentTask: '', log: [],
+    }]))
+  )
+  const [streamLog, setStreamLog] = useState([])
+  const [review, setReview]       = useState({ started: false, text: '', verdict: null, retry: 0, maxRetries: 2, reviewer: '' })
+  const [completed, setCompleted] = useState(false)
+  const [tab, setTab]             = useState('stream')
+  const streamEndRef = useRef(null)
+  const startedRef   = useRef(false)
+
+  const updateAgent = useCallback((name, patch) => {
+    setAgentStates(prev => prev[name] ? { ...prev, [name]: { ...prev[name], ...patch } } : prev)
+  }, [])
+
+  const appendLog = useCallback((name, message, color) => {
+    setStreamLog(prev => [...prev, { name, message, color, ts: Date.now() }])
+  }, [])
+
+  useEffect(() => {
+    if (startedRef.current) return
+    startedRef.current = true
+    wsClient.connect()
+    if (reviewerProvider) wsClient.setReviewer(reviewerProvider)
+
+    const agentColorMap = Object.fromEntries(agents.map(a => [a.name, a.color]))
+
+    const unsubs = [
+      wsClient.on('status',       ({ aiName, status })  => updateAgent(aiName, { status })),
+      wsClient.on('progress',     ({ aiName, percent }) => updateAgent(aiName, { progress: percent })),
+      wsClient.on('current_task', ({ aiName, task })    => updateAgent(aiName, { currentTask: task })),
+      wsClient.on('log', ({ aiName, message }) => {
+        appendLog(aiName, message, agentColorMap[aiName] ?? '#a897ff')
+      }),
+      wsClient.on('orchestration_start',     ({ aiName }) => updateAgent(aiName, { status: 'RUNNING', currentTask: '작업 분배 중...' })),
+      wsClient.on('orchestration_synthesis', ({ aiName }) => updateAgent(aiName, { currentTask: '결과 종합 중...' })),
+      wsClient.on('orchestration_done',      ({ aiName }) => {
+        updateAgent(aiName, { status: 'COMPLETED', currentTask: '', progress: 100 })
+        setCompleted(true); onDone?.()
+      }),
+      wsClient.on('review_start', ({ reviewer }) => {
+        setReview(r => ({ ...r, started: true, reviewer, text: '' }))
+        setTab('review')
+      }),
+      wsClient.on('review_log',  ({ message }) => setReview(r => ({ ...r, text: r.text + message }))),
+      wsClient.on('review_done', ({ verdict, retry, maxRetries }) => {
+        setReview(r => ({ ...r, verdict, retry: retry ?? 0, maxRetries: maxRetries ?? 2 }))
+        if (verdict === 'PASS' || (retry ?? 0) >= (maxRetries ?? 2)) { setCompleted(true); onDone?.() }
+      }),
+    ]
+
+    const managerName = agents[0]?.name
+    agents.forEach(a => wsClient.spawn(a.name, a.provider ?? a.aiType ?? 'github'))
+    setTimeout(() => { if (managerName) wsClient.prompt(managerName, request) }, 400)
+
+    return () => { unsubs.forEach(u => u?.()) }
+  }, [])
+
+  useEffect(() => { streamEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [streamLog])
+
+  const handlePause  = (name) => { wsClient.pause(name);  updateAgent(name, { status: 'STOPPED' }) }
+  const handleResume = (name) => { wsClient.resume(name); updateAgent(name, { status: 'RUNNING' }) }
+  const handleKill   = (name) => { wsClient.kill(name);   updateAgent(name, { status: 'STOPPED', currentTask: '' }) }
+
+  const agentList = Object.values(agentStates)
+  const hasReview = review.started
+
+  return (
+    <div className={styles.workspace}>
+
+      {/* 왼쪽: 에이전트 패널 */}
+      <div className={styles.agentPanel}>
+        <div className={styles.panelTitle}>
+          에이전트
+          <span className={styles.liveTag}><span className={styles.liveDot} />LIVE</span>
+        </div>
+
+        {agentList.map(agent => (
+          <AgentCard key={agent.name} agent={agent} onPause={handlePause} onResume={handleResume} onKill={handleKill} />
+        ))}
+
+        {!completed && (
+          <button className={styles.killAllBtn} onClick={() => agentList.forEach(a => handleKill(a.name))}>
+            ⏹ 전체 중단
+          </button>
+        )}
+        {completed && <div className={styles.completedBadge}>✓ 작업 완료</div>}
+      </div>
+
+      {/* 오른쪽: 탭 영역 */}
+      <div className={styles.contentArea}>
+        <div className={styles.tabBar}>
+          <button className={`${styles.tab} ${tab === 'stream' ? styles.tabActive : ''}`} onClick={() => setTab('stream')}>협업 스트림</button>
+          <button className={`${styles.tab} ${tab === 'review' ? styles.tabActive : ''} ${hasReview ? styles.tabHighlight : ''}`} onClick={() => setTab('review')}>
+            🔍 리뷰 {hasReview && review.verdict && (
+              <span style={{ color: review.verdict === 'PASS' ? '#4ade80' : '#f87171', marginLeft: 4 }}>{review.verdict}</span>
+            )}
+          </button>
+          <button className={`${styles.tab} ${tab === 'vision' ? styles.tabActive : ''}`} onClick={() => setTab('vision')}>👁 Vision</button>
+        </div>
+
+        <div className={styles.tabContent}>
+          {tab === 'stream' && (
+            <div className={styles.streamLog}>
+              {streamLog.length === 0 && <div className={styles.streamEmpty}>에이전트 작업을 기다리는 중...</div>}
+              {streamLog.map((e, i) => <span key={i} style={{ color: e.color }}>{e.message}</span>)}
+              <div ref={streamEndRef} />
             </div>
-
-            {/* 결과 패널 */}
-            <div ref={resultRef} className={styles.resultPanel}>
-              <div className={styles.resultHeader}>
-                <div className={styles.resultCheck}>✓</div>
-                <span className={styles.resultTitle}>작업 완료</span>
-              </div>
-              <div className={styles.resultContent} />
-            </div>
-          </div>
+          )}
+          {tab === 'review' && <ReviewPanel review={review} />}
+          {tab === 'vision' && <VisionPanel />}
         </div>
       </div>
     </div>

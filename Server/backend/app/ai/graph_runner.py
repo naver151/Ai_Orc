@@ -28,6 +28,26 @@ from langgraph.types import Send
 from app.ai.graph_state import GraphState, SubTask
 from app.ai.lc_providers import get_lc_model, WSStreamHandler
 from app.ai.lc_memory import save_agent_memory, build_rag_context
+from app.ai.reviewer import REVIEWER_SYSTEM_PROMPT, build_review_prompt, parse_verdict
+
+# 리뷰어 AI provider 설정 (빈 문자열 = 리뷰 비활성화)
+_reviewer_provider_key: str = ""
+
+
+def set_reviewer(provider_key: str) -> str:
+    """리뷰어 AI provider를 설정합니다. 빈 문자열이면 비활성화."""
+    global _reviewer_provider_key
+    _reviewer_provider_key = provider_key.strip()
+    if _reviewer_provider_key:
+        return f"리뷰어 활성화됨 — provider: {_reviewer_provider_key}"
+    return "리뷰어 비활성화됨"
+
+
+def get_reviewer_status() -> dict:
+    return {
+        "active": bool(_reviewer_provider_key),
+        "provider": _reviewer_provider_key,
+    }
 
 _ORCHESTRATE_RE = re.compile(r"<ORCHESTRATE>(.*?)</ORCHESTRATE>", re.DOTALL)
 
@@ -358,10 +378,97 @@ async def synthesize_node(state: GraphState) -> dict:
         except Exception:
             pass
 
-    await ws.send_json({"type": "current_task",      "aiName": manager, "task": ""})
-    await ws.send_json({"type": "orchestration_done", "aiName": manager})
+    await ws.send_json({"type": "current_task", "aiName": manager, "task": ""})
+
+    # 리뷰어 비활성화 시 바로 orchestration_done 전송
+    if not _reviewer_provider_key:
+        await ws.send_json({"type": "orchestration_done", "aiName": manager})
 
     return {"final_synthesis": synthesis}
+
+
+async def review_node(state: GraphState) -> dict:
+    """
+    Phase 5 (리뷰): 오케스트레이션 최종 결과물을 검토하고 PASS/FAIL 판정.
+
+    - PASS 또는 max_retries 초과 → 종료
+    - FAIL + 재시도 가능 → plan_node 로 복귀 (retry_count 증가)
+
+    WebSocket 메시지:
+      { type: "review_start",  aiName, reviewer }
+      { type: "review_log",    aiName, message }   ← 리뷰 텍스트 스트리밍
+      { type: "review_done",   aiName, verdict, retry }
+    """
+    ws          = state["websocket"]
+    manager     = state["manager_name"]
+    synthesis   = state.get("final_synthesis", "")
+    user_prompt = state["user_prompt"]
+    retry_count = state.get("retry_count", 0)
+    max_retries = state.get("max_retries", 2)
+
+    # 리뷰어 비활성화 상태면 즉시 pass
+    if not _reviewer_provider_key:
+        return {"review_verdict": "pass", "review_feedback": ""}
+
+    # kill 체크
+    if await _check_control(state, manager):
+        await ws.send_json({"type": "orchestration_done", "aiName": manager})
+        return {"review_verdict": "pass", "review_feedback": ""}
+
+    await ws.send_json({
+        "type": "review_start",
+        "aiName": manager,
+        "reviewer": _reviewer_provider_key,
+    })
+
+    review_prompt = build_review_prompt(user_prompt, synthesis, retry_count)
+    messages = _build_messages(REVIEWER_SYSTEM_PROMPT, review_prompt)
+
+    handler = ProgressWSStreamHandler(ws, manager)
+    cfg     = RunnableConfig(callbacks=[handler])
+    model   = get_lc_model(_reviewer_provider_key, streaming=True)
+
+    # 핸들러 메시지 타입을 review_log로 오버라이드
+    _orig_new_token = handler.on_llm_new_token
+
+    async def _review_token(token: str, **kwargs) -> None:
+        if token:
+            await ws.send_json({"type": "review_log", "aiName": manager, "message": token})
+
+    handler.on_llm_new_token = _review_token  # type: ignore[method-assign]
+
+    review_text = ""
+    try:
+        resp = await model.ainvoke(messages, config=cfg)
+        review_text = resp.content
+    except asyncio.CancelledError:
+        review_text = ""
+    except Exception as e:
+        review_text = f"[리뷰어 오류] {e}"
+        await ws.send_json({"type": "review_log", "aiName": manager, "message": review_text})
+
+    verdict = parse_verdict(review_text)
+
+    # FAIL이고 재시도 가능하면 retry_count 증가
+    new_retry = retry_count + 1 if verdict == "fail" and retry_count < max_retries else retry_count
+
+    await ws.send_json({
+        "type":    "review_done",
+        "aiName":  manager,
+        "verdict": verdict.upper(),
+        "retry":   new_retry,
+        "maxRetries": max_retries,
+    })
+
+    # 최종 종료 (PASS이거나 재시도 한도 초과)
+    if verdict == "pass" or new_retry >= max_retries:
+        await ws.send_json({"type": "orchestration_done", "aiName": manager})
+
+    return {
+        "review_verdict":  verdict,
+        "review_feedback": review_text,
+        "retry_count":     new_retry,
+    }
 
 
 # ── 라우팅 ────────────────────────────────────────────────────────────────────
@@ -372,6 +479,17 @@ def route_after_plan(state: GraphState) -> str:
 
 # ── 그래프 빌드 ───────────────────────────────────────────────────────────────
 
+def route_after_review(state: GraphState) -> str:
+    """리뷰 판정에 따라 재시도 또는 종료."""
+    verdict     = state.get("review_verdict", "pass")
+    retry_count = state.get("retry_count", 0)
+    max_retries = state.get("max_retries", 2)
+
+    if verdict == "fail" and retry_count < max_retries:
+        return "plan_node"   # 재시도
+    return END
+
+
 def build_graph():
     g = StateGraph(GraphState)
 
@@ -379,6 +497,7 @@ def build_graph():
     g.add_node("dispatch_node",   dispatch_node)
     g.add_node("worker_node",     worker_node)
     g.add_node("synthesize_node", synthesize_node)
+    g.add_node("review_node",     review_node)
 
     g.add_edge(START, "plan_node")
     g.add_conditional_edges(
@@ -388,7 +507,12 @@ def build_graph():
     )
     g.add_edge("dispatch_node",   "worker_node")
     g.add_edge("worker_node",     "synthesize_node")
-    g.add_edge("synthesize_node", END)
+    g.add_edge("synthesize_node", "review_node")
+    g.add_conditional_edges(
+        "review_node",
+        route_after_review,
+        {"plan_node": "plan_node", END: END},
+    )
 
     return g.compile()
 

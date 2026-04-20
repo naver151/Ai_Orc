@@ -1,56 +1,50 @@
 """
-리뷰어 AI 모듈
+리뷰어 AI 모듈 — LangChain 기반
 
-각 에이전트의 결과물을 자동으로 검토하고 품질을 검증합니다.
-에이전트 응답이 완료되면 리뷰어가 호출되어 스트리밍으로 리뷰를 제공합니다.
+graph_runner.py의 review_node에서 호출됩니다.
+오케스트레이션 최종 결과물을 검토하여 PASS/FAIL 판정을 내립니다.
 """
 
-from .providers.base import AIProvider
+from __future__ import annotations
+import re
 
-REVIEWER_SYSTEM_PROMPT = """당신은 AI 에이전트의 결과물을 검토하는 전문 리뷰어입니다.
-주어진 작업 지시와 AI의 응답을 꼼꼼히 평가하여 아래 형식으로 리뷰를 작성하세요.
+REVIEWER_SYSTEM_PROMPT = """당신은 AI 팀의 결과물을 검토하는 전문 리뷰어입니다.
+주어진 사용자 요청과 AI 팀의 최종 결과물을 꼼꼼히 평가하여 아래 형식으로 리뷰를 작성하세요.
 
-📋 **작업 이해도**: 에이전트가 작업을 제대로 이해했는지 평가
-✅ **잘 된 점**: 응답에서 우수한 부분을 구체적으로 서술
+📋 **작업 이해도**: 요청을 정확히 이해하고 수행했는지 평가
+✅ **잘 된 점**: 결과물에서 우수한 부분을 구체적으로 서술
 ⚠️ **개선 필요**: 부족하거나 잘못된 부분을 구체적으로 서술
 🎯 **품질 점수**: X / 10
 📌 **최종 판정**: PASS 또는 FAIL
 
 판정 기준:
-- PASS: 점수 7점 이상, 작업 요구사항을 충분히 충족
-- FAIL: 점수 6점 이하, 중요한 오류·누락·오해가 존재
+- PASS: 점수 7점 이상, 사용자 요구사항을 충분히 충족
+- FAIL: 점수 6점 이하, 중요한 오류·누락·오해 존재
 
-반드시 위 형식을 지켜 작성하세요."""
+⚠️ 반드시 마지막 줄을 아래 형식 중 하나로 끝내세요:
+📌 **최종 판정**: PASS
+📌 **최종 판정**: FAIL"""
+
+# 판정 추출 정규식
+_VERDICT_RE = re.compile(r"최종\s*판정[^\n]*?(PASS|FAIL)", re.IGNORECASE)
 
 
-class ReviewerAgent:
-    """결과물 검증을 담당하는 리뷰어 AI."""
+def build_review_prompt(user_prompt: str, synthesis: str, retry_count: int) -> str:
+    """리뷰 요청 프롬프트를 생성합니다."""
+    retry_note = f"\n\n⚠️ 이번이 {retry_count + 1}번째 시도입니다. 더욱 엄격하게 검토해주세요." if retry_count > 0 else ""
+    return (
+        f"## 사용자 요청\n{user_prompt}\n\n"
+        f"## AI 팀 최종 결과물\n{synthesis}"
+        f"{retry_note}\n\n"
+        "위 결과물을 꼼꼼히 검토하고 리뷰를 작성해주세요."
+    )
 
-    def __init__(self, provider: AIProvider):
-        self.provider = provider
 
-    async def review(
-        self,
-        original_task: str,
-        agent_response: str,
-        agent_name: str,
-    ):
-        """
-        에이전트 응답을 스트리밍으로 리뷰합니다.
-
-        Args:
-            original_task: 에이전트에게 주어진 원래 작업 지시
-            agent_response: 에이전트의 전체 응답 텍스트
-            agent_name: 리뷰 대상 에이전트 이름
-        """
-        review_prompt = (
-            f"아래는 [{agent_name}] 에이전트가 수행한 작업과 그 결과입니다.\n\n"
-            f"## 작업 지시\n{original_task}\n\n"
-            f"## 에이전트 응답\n{agent_response}\n\n"
-            f"위 결과물을 꼼꼼히 검토하고 리뷰를 작성해주세요."
-        )
-
-        messages = [{"role": "user", "content": review_prompt}]
-
-        async for chunk in self.provider.stream_chat(messages, REVIEWER_SYSTEM_PROMPT):
-            yield chunk
+def parse_verdict(review_text: str) -> str:
+    """리뷰 텍스트에서 PASS/FAIL 판정을 추출합니다."""
+    match = _VERDICT_RE.search(review_text)
+    if match:
+        return match.group(1).lower()
+    # 판정을 찾지 못하면 기본적으로 pass
+    return "pass"
+    

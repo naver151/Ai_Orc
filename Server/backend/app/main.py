@@ -11,8 +11,11 @@ from app.routes.task import router as task_router
 from app.routes.orchestrator import router as orchestrator_router
 from app.routes.upload import router as upload_router
 from app.routes.orch_logs import router as orch_logs_router
+from app.routes.vision import router as vision_router
+from app.routes.chat import router as chat_router
 from app.connection_manager import connection_manager
 from app.ai.agent_runner import agent_manager
+from app.ai.graph_runner import set_reviewer, get_reviewer_status
 
 # DB 테이블 초기화
 Base.metadata.create_all(bind=engine)
@@ -35,6 +38,8 @@ app.include_router(task_router)
 app.include_router(orchestrator_router)
 app.include_router(upload_router)
 app.include_router(orch_logs_router)
+app.include_router(vision_router)
+app.include_router(chat_router)
 
 
 # ── 헬스 체크 ─────────────────────────────────────────────────
@@ -55,16 +60,21 @@ async def websocket_endpoint(websocket: WebSocket):
     프론트엔드와의 실시간 양방향 통신 허브.
 
     수신 액션 (frontend → backend):
-      spawn   : 에이전트 슬롯 생성  { action, aiName, provider? }
-      prompt  : 명령 전송           { action, aiName, text }
-      pause   : 일시 정지           { action, aiName }
-      resume  : 재개                { action, aiName }
-      kill    : 에이전트 종료       { action, aiName }
+      spawn        : 에이전트 슬롯 생성  { action, aiName, provider? }
+      prompt       : 명령 전송           { action, aiName, text }
+      pause        : 일시 정지           { action, aiName }
+      resume       : 재개                { action, aiName }
+      kill         : 에이전트 종료       { action, aiName }
+      set_reviewer : 리뷰어 AI 설정      { action, provider }
+                     provider 빈 문자열 → 리뷰어 비활성화
 
     송신 메시지 (backend → frontend):
-      { type: "log",      aiName, message }
-      { type: "progress", aiName, percent }
-      { type: "status",   aiName, status  }
+      { type: "log",          aiName, message }
+      { type: "progress",     aiName, percent }
+      { type: "status",       aiName, status  }
+      { type: "review_start", aiName, reviewer }
+      { type: "review_log",   aiName, message }
+      { type: "review_done",  aiName, verdict, retry, maxRetries }
     """
     await connection_manager.connect(websocket)
     try:
@@ -77,6 +87,19 @@ async def websocket_endpoint(websocket: WebSocket):
 
             action: str = data.get("action", "")
             ai_name: str = data.get("aiName", "").strip()
+
+            # ── set_reviewer: 리뷰어 AI 설정 ─────────────────
+            if action == "set_reviewer":
+                provider = data.get("provider", "").strip()
+                message  = set_reviewer(provider)
+                status   = get_reviewer_status()
+                await websocket.send_json({
+                    "type":     "reviewer_status",
+                    "active":   status["active"],
+                    "provider": status["provider"],
+                    "message":  message,
+                })
+                continue
 
             if not ai_name:
                 continue

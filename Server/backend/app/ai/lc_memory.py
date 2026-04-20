@@ -38,7 +38,7 @@ _vectorstore: Optional[VectorStore] = None
 def _get_vectorstore() -> VectorStore:
     global _vectorstore
     if _vectorstore is None:
-        from langchain_community.vectorstores import Chroma
+        from langchain_chroma import Chroma
         _vectorstore = Chroma(
             collection_name="agent_memory_lc",
             embedding_function=_get_embeddings(),
