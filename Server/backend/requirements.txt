@@ -1,0 +1,84 @@
+# -- Web Framework --------------------------------------------------------
+fastapi==0.135.1
+fastapi-cli==0.0.24
+uvicorn==0.42.0
+starlette==0.52.1
+python-multipart==0.0.22
+watchfiles==1.1.1
+
+# -- Data Validation ------------------------------------------------------
+pydantic==2.12.5
+pydantic-extra-types==2.11.1
+pydantic-settings==2.13.1
+pydantic_core==2.41.5
+annotated-types==0.7.0
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+
+# -- Database -------------------------------------------------------------
+SQLAlchemy==2.0.48
+psycopg2-binary==2.9.11
+
+# -- HTTP / WebSocket -----------------------------------------------------
+httpx==0.28.1
+httpcore==1.0.9
+httptools==0.7.1
+websockets==16.0
+requests==2.32.5
+urllib3==2.6.3
+
+# -- Environment ----------------------------------------------------------
+python-dotenv==1.2.2
+PyYAML==6.0.3
+
+# -- Template / Session ---------------------------------------------------
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+itsdangerous==2.2.0
+
+# -- CLI / Utilities ------------------------------------------------------
+typer==0.24.1
+click==8.3.1
+shellingham==1.5.4
+rich==14.3.3
+rich-toolkit==0.19.7
+colorama==0.4.6
+Pygments==2.19.2
+markdown-it-py==4.0.0
+mdurl==0.1.2
+
+# -- Networking / Validation ----------------------------------------------
+anyio==4.12.1
+certifi==2026.2.25
+charset-normalizer==3.4.6
+dnspython==2.8.0
+email-validator==2.3.0
+idna==3.11
+h11==0.16.0
+
+# -- Task Queue -----------------------------------------------------------
+celery==5.4.0
+redis==5.2.1
+
+# -- Vector Memory --------------------------------------------------------
+chromadb==1.5.5
+
+# -- Computer Vision ------------------------------------------------------
+ultralytics>=8.0.0
+
+# -- Monitoring -----------------------------------------------------------
+sentry-sdk==2.55.0
+
+# -- AI Providers ---------------------------------------------------------
+anthropic>=0.40.0
+openai>=1.50.0
+google-generativeai>=0.8.0
+
+# -- LangChain / LangGraph ------------------------------------------------
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-anthropic>=0.2.0
+langchain-google-genai>=2.0.0
+langgraph>=0.2.0
+langchain-community>=0.3.0
