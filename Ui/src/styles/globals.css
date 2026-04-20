@@ -6,6 +6,13 @@
   padding: 0;
 }
 
+/* ── 글씨 크기 (기본 = medium) ── */
+:root                    { --msg-font: 13.5px; --msg-line: 1.6; }
+[data-font-size="small"] { --msg-font: 12px;   --msg-line: 1.55; }
+[data-font-size="large"] { --msg-font: 16px;   --msg-line: 1.65; }
+[data-font-size="xl"]    { --msg-font: 19px;   --msg-line: 1.7;  }
+
+/* ── 다크 테마 (기본) ── */
 :root {
   --bg: #0a0a0f;
   --surface: #111118;
@@ -26,6 +33,38 @@
   --radius-sm: 8px;
   --font-display: 'Syne', sans-serif;
   --font-body: 'Noto Sans KR', sans-serif;
+  /* 스크롤바 */
+  --scrollbar: rgba(255,255,255,0.1);
+  /* 그림자 */
+  --shadow-sm: 0 2px 12px rgba(0,0,0,0.4);
+  --shadow-md: 0 6px 32px rgba(0,0,0,0.55);
+  --shadow-card: 0 32px 80px rgba(0,0,0,0.55);
+  /* 오버레이 */
+  --overlay-bg: rgba(17,17,24,0.75);
+}
+
+/* ── 라이트 테마 ── */
+[data-theme="light"] {
+  --bg: #f2f2f8;
+  --surface: #ffffff;
+  --surface2: #e8e8f2;
+  --border: rgba(0,0,0,0.07);
+  --border2: rgba(0,0,0,0.14);
+  --text: #111118;
+  --text2: #555570;
+  --text3: #9999b8;
+  --accent: #7c6dfa;
+  --accent2: #6054e8;
+  --accent-bg: rgba(124,109,250,0.1);
+  --teal: #0aa07e;
+  --teal-bg: rgba(10,160,126,0.1);
+  --amber: #d97706;
+  --amber-bg: rgba(217,119,6,0.1);
+  --scrollbar: rgba(0,0,0,0.12);
+  --shadow-sm: 0 2px 12px rgba(0,0,0,0.1);
+  --shadow-md: 0 6px 32px rgba(0,0,0,0.15);
+  --shadow-card: 0 32px 80px rgba(0,0,0,0.1);
+  --overlay-bg: rgba(242,242,248,0.85);
 }
 
 html, body, #root {

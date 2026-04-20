@@ -1,3 +1,4 @@
+/* ── 전체 씬 ─────────────────────────────────────── */
 .scene {
   position: absolute;
   inset: 0;
@@ -5,10 +6,11 @@
   overflow: hidden;
 }
 
+/* ── 도트 애니메이션 씬 ──────────────────────────── */
 .dotScene {
   position: absolute;
   inset: 0;
-  background: #0a0a0f;
+  background: var(--bg);
   transition: opacity 0.4s;
   z-index: 2;
 }
@@ -49,7 +51,7 @@
   pointer-events: none;
 }
 
-/* Work scene: two-column layout */
+/* ── 워크 씬 ─────────────────────────────────────── */
 .workScene {
   position: absolute;
   inset: 0;
@@ -57,19 +59,96 @@
   pointer-events: none;
   transition: opacity 0.5s;
   z-index: 1;
-  background: #0a0a0f;
+  background: var(--bg);
   display: flex;
-  gap: 0;
+  flex-direction: column;
 }
 
-/* Left: agent list panel */
+/* ── 상단 헤더 ───────────────────────────────────── */
+.workHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--surface);
+}
+
+.workHeaderLeft {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.workHeaderDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulseDot 2s infinite;
+}
+
+.workTitle {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text3);
+  text-transform: uppercase;
+}
+
+.logViewBtn {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--teal);
+  background: var(--teal-bg);
+  border: 1px solid rgba(30,200,160,0.3);
+  border-radius: var(--radius-sm);
+  padding: 5px 14px;
+  cursor: pointer;
+  margin-left: auto;
+  transition: background 0.15s, color 0.15s;
+  letter-spacing: 0.03em;
+}
+.logViewBtn:hover {
+  background: rgba(30,200,160,0.2);
+}
+
+.backToChatBtn {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  background: transparent;
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, opacity 0.3s;
+}
+.backToChatBtn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+/* ── 본문 ────────────────────────────────────────── */
+.workBody {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── 에이전트 목록 (왼쪽) ────────────────────────── */
 .agentList {
-  width: 200px;
+  width: 190px;
   flex-shrink: 0;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  background: var(--surface);
+  overflow: hidden;
 }
 
 .listHeader {
@@ -79,35 +158,41 @@
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text3);
-  padding: 14px 16px 10px;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 14px 8px;
+  flex-shrink: 0;
 }
 
 .listItems {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 0;
+  padding: 4px 0;
   scrollbar-width: none;
 }
 .listItems::-webkit-scrollbar { display: none; }
 
+/* 에이전트 아이템 */
 .agentItem {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 14px;
   opacity: 0;
   transform: translateX(-8px);
-  transition: opacity 0.3s ease, transform 0.3s ease;
+  transition: opacity 0.3s, transform 0.3s, background 0.2s;
 }
 
-.agentItem.show {
-  opacity: 1;
-  transform: translateX(0);
+.show {
+  opacity: 1 !important;
+  transform: translateX(0) !important;
 }
 
-.agentItem.running .aDot { animation: pulseDot 1s ease-in-out infinite; }
-.agentItem.done .aDot { animation: none; opacity: 0.4; }
+.running {
+  background: var(--border);
+}
+
+.done .aDot {
+  animation: none !important;
+}
 
 .aDot {
   width: 8px;
@@ -116,18 +201,18 @@
   flex-shrink: 0;
 }
 
-.pulse { animation: pulseDot 1.8s ease-in-out infinite; }
-
-@keyframes pulseDot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: 0.35; transform: scale(0.55); }
+.pulse {
+  animation: pulseDot 1.4s ease-in-out infinite;
 }
 
-.aInfo { flex: 1; min-width: 0; }
+.aInfo {
+  flex: 1;
+  min-width: 0;
+}
 
 .aName {
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
@@ -136,24 +221,30 @@
 }
 
 .aAi {
+  font-size: 10px;
   font-family: var(--font-display);
-  font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.05em;
-  margin-top: 1px;
+  letter-spacing: 0.06em;
+  margin-top: 2px;
+}
+
+/* 에이전트 패널 — 배정된 업무 */
+.aTask {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 4px;
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .aSpinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255,255,255,0.08);
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--border2);
   border-radius: 50%;
-  flex-shrink: 0;
   animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  flex-shrink: 0;
 }
 
 .aCheck {
@@ -162,26 +253,28 @@
   flex-shrink: 0;
 }
 
-/* Right: stream area */
+/* ── 스트림 영역 (오른쪽) ────────────────────────── */
 .streamArea {
   flex: 1;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   min-width: 0;
+  position: relative;
 }
 
 .streamHeader {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 20px;
+  padding: 9px 16px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .streamTitle {
   font-family: var(--font-display);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -194,25 +287,21 @@
   gap: 5px;
   font-family: var(--font-display);
   font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   color: var(--teal);
-  background: var(--teal-bg);
-  border: 1px solid rgba(30,200,160,0.25);
-  padding: 3px 8px;
-  border-radius: 10px;
   opacity: 0;
-  transition: opacity 0.3s;
+  transition: opacity 0.4s;
 }
 
-.liveTag.liveShow { opacity: 1; }
+.liveShow { opacity: 1; }
 
 .liveDot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
   background: var(--teal);
-  animation: pulse 1.2s infinite;
+  animation: pulseDot 1.2s infinite;
 }
 
 .progText {
@@ -226,25 +315,42 @@
 .streamBody {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
   scrollbar-width: thin;
-  scrollbar-color: var(--border2) transparent;
+  scrollbar-color: var(--scrollbar) transparent;
+  min-height: 0;
 }
 .streamBody::-webkit-scrollbar { width: 4px; }
-.streamBody::-webkit-scrollbar-track { background: transparent; }
-.streamBody::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+.streamBody::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 2px;
+}
 
-/* Section (per agent) */
+.progressBar {
+  height: 2px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.progFill {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width 0.35s ease, background 0.5s ease;
+  border-radius: 1px;
+}
+
+/* ── 섹션 (에이전트별 로그 묶음) ─────────────────── */
 .section {
   opacity: 0;
-  transform: translateY(6px);
+  transform: translateY(8px);
   transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
-.section.sectionShow {
+.sectionShow {
   opacity: 1;
   transform: translateY(0);
 }
@@ -252,7 +358,7 @@
 .sectionLabel {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   margin-bottom: 8px;
 }
 
@@ -275,9 +381,9 @@
   font-family: var(--font-display);
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   padding: 2px 7px;
-  border-radius: 6px;
+  border-radius: 4px;
 }
 
 .sectionArrow {
@@ -286,82 +392,289 @@
   color: var(--text3);
 }
 
+/* 스트림 섹션 — 배정된 업무 태그 */
+.sectionTask {
+  font-size: 10px;
+  color: var(--text2);
+  background: var(--border);
+  border-left: 2px solid var(--border2);
+  padding: 5px 10px;
+  margin: 4px 0 8px 13px;
+  border-radius: 0 4px 4px 0;
+  line-height: 1.5;
+}
+
 .sectionBody {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding-left: 14px;
+  padding-left: 13px;
   border-left: 1px solid var(--border);
 }
 
-/* Log lines */
+/* ── 로그 라인 ───────────────────────────────────── */
 .logLine {
-  font-size: 11.5px;
+  font-size: var(--msg-font);
   font-family: 'Menlo', 'Consolas', monospace;
-  line-height: 1.65;
+  line-height: var(--msg-line);
   opacity: 0;
-  transform: translateY(3px);
-  transition: opacity 0.22s, transform 0.22s;
-  word-break: break-all;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
-.logLine.logShow {
-  opacity: 0.75;
+.logShow {
+  opacity: 1;
   transform: translateY(0);
 }
 
-.logLine.dim {
-  opacity: 0 !important;
-}
-.logLine.dim.logShow {
-  opacity: 0.22 !important;
-}
+.dim  { opacity: 0.2 !important; }
+.key  { font-weight: 600; }
 
-.logLine.key.logShow {
-  opacity: 1 !important;
-  font-weight: 600;
-}
-
-/* Handoff banner */
+/* ── 핸드오프 배너 ───────────────────────────────── */
 .handoff {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
-  font-family: var(--font-display);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 8px 12px;
+  padding: 7px 12px;
   border-radius: 8px;
+  font-size: 11px;
   opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 0.25s, transform 0.25s;
+  transform: translateY(6px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
-.handoff.handoffShow {
+.handoffShow {
   opacity: 1;
   transform: translateY(0);
 }
 
 .handoffArrow {
   font-size: 14px;
-}
-
-/* Progress bar */
-.progressBar {
-  height: 2px;
-  background: var(--border);
   flex-shrink: 0;
 }
 
-.progFill {
-  height: 100%;
-  background: var(--accent);
-  width: 0%;
-  transition: width 0.4s ease;
+/* ── 결과 패널 ───────────────────────────────────── */
+.resultPanel {
+  border-top: 1px solid var(--border);
+  padding: 18px 20px;
+  flex-shrink: 0;
+  background: var(--teal-bg);
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+  max-height: 42%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+.resultPanel::-webkit-scrollbar { width: 4px; }
+.resultPanel::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 2px;
 }
 
+.resultShow {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* 완료 후 결과를 전체 영역에 오버레이 */
+.resultOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  max-height: none;
+  border-top: none;
+  border-radius: 0;
+  background: var(--bg);
+  padding: 20px;
+  overflow-y: auto;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.5s ease;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+.resultOverlay::-webkit-scrollbar { width: 4px; }
+.resultOverlay::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 2px;
+}
+
+.resultHeader {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 14px;
+}
+
+.resultCheck {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--teal-bg);
+  border: 1px solid rgba(30,200,160,0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--teal);
+  flex-shrink: 0;
+}
+
+.resultTitle {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--teal);
+}
+
+.resultContent {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 코드 블록 사이 일반 텍스트 */
+.resultText {
+  font-size: var(--msg-font);
+  line-height: var(--msg-line);
+  color: var(--text2);
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── 파일 뷰어 ───────────────────────────────────────── */
+.fileViewer {
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.fileViewerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  gap: 10px;
+}
+
+.filePath {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0;
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.filePathDir {
+  color: var(--text3);
+}
+
+.filePathSep {
+  color: var(--text3);
+  padding: 0 1px;
+}
+
+.filePathFile {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.copyBtn {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text2);
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: 5px;
+  padding: 3px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+  letter-spacing: 0.04em;
+}
+.copyBtn:hover {
+  color: var(--text);
+  background: var(--border2);
+}
+
+.fileViewerBody {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+  max-height: 380px;
+  overflow-y: auto;
+}
+.fileViewerBody::-webkit-scrollbar { width: 4px; height: 4px; }
+.fileViewerBody::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 2px;
+}
+
+.lineNums {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.lineNum {
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text3);
+  text-align: right;
+  padding: 0 14px 0 10px;
+  min-width: 36px;
+}
+
+.codeContent {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 0;
+  min-width: 0;
+}
+
+.codeLine {
+  font-family: 'Menlo', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  padding: 0 16px;
+  white-space: pre;
+}
+.codeLine:hover {
+  background: var(--border);
+}
+
+/* ── 키프레임 ────────────────────────────────────── */
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.35; transform: scale(0.6); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 반응형 ──────────────────────────────────────── */
 @media (max-width: 600px) {
-  .agentList { width: 150px; }
-  .aName { font-size: 11px; }
+  .agentList { width: 140px; }
+  .aName     { font-size: 10px; }
 }
