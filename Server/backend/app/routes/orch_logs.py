@@ -43,6 +43,13 @@ class RatingUpdate(BaseModel):
     rating: int = Field(..., ge=1, le=5)
 
 
+class UiLogCreate(BaseModel):
+    request: str
+    agents: list[dict]          # [{name, roleKey, task, aiType}]
+    worker_results: list[str]   # 에이전트별 최종 출력 텍스트
+    synthesis_result: str = ""  # 마지막 에이전트 출력 (요약본)
+
+
 # ── 헬퍼 ───────────────────────────────────────────────────────
 
 def _to_detail(log: OrchestrationLog) -> OrchLogDetail:
@@ -61,6 +68,27 @@ def _to_detail(log: OrchestrationLog) -> OrchLogDetail:
 
 
 # ── 엔드포인트 ─────────────────────────────────────────────────
+
+@router.post("/ui", response_model=OrchLogDetail)
+def save_ui_log(body: UiLogCreate, db: Session = Depends(get_db)):
+    """UI 에이전트 워크스페이스 완료 시 오케스트레이션 로그 저장."""
+    worker_names = [a.get("name", "") for a in body.agents]
+    subtasks = [a.get("task", "") for a in body.agents]
+
+    log = OrchestrationLog(
+        manager_name="AI.Orc 관리자",
+        user_prompt=body.request,
+        plan_summary=f"{len(body.agents)}개 에이전트 협업",
+        worker_names=json.dumps(worker_names, ensure_ascii=False),
+        subtasks_json=json.dumps(subtasks, ensure_ascii=False),
+        worker_results_json=json.dumps(body.worker_results, ensure_ascii=False),
+        synthesis_result=body.synthesis_result or (body.worker_results[-1] if body.worker_results else ""),
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return _to_detail(log)
+
 
 @router.get("", response_model=list[OrchLogSummary])
 def list_logs(

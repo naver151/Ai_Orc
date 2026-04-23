@@ -11,6 +11,8 @@ from app.routes.task import router as task_router
 from app.routes.orchestrator import router as orchestrator_router
 from app.routes.upload import router as upload_router
 from app.routes.orch_logs import router as orch_logs_router
+from app.routes.chat import router as chat_router
+from app.routes.orchestrate_stream import router as orchestrate_stream_router
 from app.connection_manager import connection_manager
 from app.ai.agent_runner import agent_manager
 
@@ -35,6 +37,8 @@ app.include_router(task_router)
 app.include_router(orchestrator_router)
 app.include_router(upload_router)
 app.include_router(orch_logs_router)
+app.include_router(chat_router)
+app.include_router(orchestrate_stream_router)
 
 
 # ── 헬스 체크 ─────────────────────────────────────────────────

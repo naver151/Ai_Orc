@@ -17,16 +17,28 @@ from typing import Optional
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
 
-# 임베딩 선택: OpenAI 키 있으면 실제 임베딩, 없으면 테스트용 가짜 임베딩
+# 임베딩: GitHub 토큰으로 Azure AI Inference 엔드포인트의 text-embedding-3-small 사용
 def _get_embeddings():
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if api_key and not api_key.startswith("your"):
+    github_token = os.getenv("GITHUB_TOKEN", "")
+    if github_token:
         try:
             from langchain_openai import OpenAIEmbeddings
-            return OpenAIEmbeddings(api_key=api_key)
+            return OpenAIEmbeddings(
+                model="text-embedding-3-small",
+                api_key=github_token,
+                base_url="https://models.inference.ai.azure.com",
+            )
         except Exception:
             pass
-    # 폴백: 차원 고정 가짜 임베딩 (의미 검색 불가, 구조 테스트용)
+    # 폴백: OpenAI 키
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if openai_key and not openai_key.startswith("your"):
+        try:
+            from langchain_openai import OpenAIEmbeddings
+            return OpenAIEmbeddings(api_key=openai_key)
+        except Exception:
+            pass
+    # 최후 폴백: 가짜 임베딩 (의미 검색 불가)
     from langchain_core.embeddings import FakeEmbeddings
     return FakeEmbeddings(size=1536)
 

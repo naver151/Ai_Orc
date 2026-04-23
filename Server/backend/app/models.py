@@ -4,6 +4,17 @@ from app.db import Base
 import json
 
 
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    uid        = Column(String, primary_key=True)   # 프론트엔드 생성 uid
+    name       = Column(String, nullable=False)
+    age        = Column(Integer, nullable=True)
+    job        = Column(String, nullable=True)
+    gender     = Column(String, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class ProjectModel(Base):
     __tablename__ = "projects"
 

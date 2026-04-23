@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Expand-Archive -Path 'C:\\\\Users\\\\USER\\\\Downloads\\\\Ai_Orc-main \\(1\\)\\\\Ai_Orc-main\\\\Ui.zip' -DestinationPath 'C:\\\\Users\\\\USER\\\\AppData\\\\Local\\\\Temp\\\\Ui_new' -Force\")",
+      "PowerShell($path = \"C:\\\\Users\\\\USER\\\\OneDrive\\\\문서\\\\GitHub\\\\Ai_Orc\\\\Ai_Orc\\\\Ui\"; Get-ChildItem -Path $path -Recurse | Where-Object { $_.Extension -in \".js\", \".jsx\", \".py\" } | Select-Object FullName)",
+      "PowerShell($base = \"C:\\\\Users\\\\USER\\\\OneDrive\\\\문서\\\\GitHub\\\\Ai_Orc\\\\Ai_Orc\"; Test-Path \"$base\\\\Ui\\\\src\")",
+      "PowerShell($base = \"C:\\\\Users\\\\USER\\\\OneDrive\\\\문서\\\\GitHub\\\\Ai_Orc\\\\Ai_Orc\"; Get-ChildItem \"$base\\\\Ui\\\\src\")",
+      "PowerShell($base = \"C:\\\\Users\\\\USER\\\\OneDrive\\\\문서\\\\GitHub\\\\Ai_Orc\\\\Ai_Orc\"; Get-ChildItem \"$base\\\\Server\")",
+      "PowerShell($base = \"C:\\\\Users\\\\USER\\\\OneDrive\\\\文档\\\\GitHub\\\\Ai_Orc\\\\Ai_Orc\\\\Server\\\\backend\"; Get-ChildItem \"$base\" -Directory)"
+    ]
+  }
+}
