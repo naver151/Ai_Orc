@@ -203,22 +203,6 @@ async def plan_node(state: GraphState) -> dict:
     }
 
 
-def dispatch_node(state: GraphState) -> list[Send] | dict:
-    """
-    Phase 2: LangGraph Send API로 서브태스크를 병렬 워커에 분산.
-    각 Send → 독립적인 worker_node 인스턴스로 병렬 실행.
-    """
-    if state.get("is_direct"):
-        return {}
-
-    return [
-        Send("worker_node", {
-            **state,
-            "current_worker_name": st["worker_name"],
-            "current_task_text":   st["task"],
-        })
-        for st in state["subtasks"]
-    ]
 
 
 async def worker_node(state: GraphState) -> dict:
@@ -350,8 +334,24 @@ async def synthesize_node(state: GraphState) -> dict:
 
 # ── 라우팅 ────────────────────────────────────────────────────────────────────
 
-def route_after_plan(state: GraphState) -> str:
-    return END if state.get("is_direct") else "dispatch_node"
+def route_after_plan(state: GraphState):
+    """
+    plan_node 이후 라우팅.
+    - 직접 답변: END
+    - 분배 필요: Send API로 worker_node를 병렬 실행
+      (Send는 반드시 add_conditional_edges 의 라우팅 함수에서만 반환 가능)
+    """
+    if state.get("is_direct"):
+        return END
+
+    return [
+        Send("worker_node", {
+            **state,
+            "current_worker_name": st["worker_name"],
+            "current_task_text":   st["task"],
+        })
+        for st in state["subtasks"]
+    ]
 
 
 # ── 그래프 빌드 ───────────────────────────────────────────────────────────────
@@ -360,17 +360,12 @@ def build_graph():
     g = StateGraph(GraphState)
 
     g.add_node("plan_node",       plan_node)
-    g.add_node("dispatch_node",   dispatch_node)
     g.add_node("worker_node",     worker_node)
     g.add_node("synthesize_node", synthesize_node)
 
     g.add_edge(START, "plan_node")
-    g.add_conditional_edges(
-        "plan_node",
-        route_after_plan,
-        {"dispatch_node": "dispatch_node", END: END},
-    )
-    g.add_edge("dispatch_node",   "worker_node")
+    # dispatch_node 제거 — Send는 라우팅 함수(route_after_plan)에서 직접 반환
+    g.add_conditional_edges("plan_node", route_after_plan)
     g.add_edge("worker_node",     "synthesize_node")
     g.add_edge("synthesize_node", END)
 
