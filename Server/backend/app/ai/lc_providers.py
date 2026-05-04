@@ -104,6 +104,17 @@ class ProgressWSStreamHandler(WSStreamHandler):
 
 # ── LangChain 모델 팩토리 ─────────────────────────────────────────────────────
 
+def _github_model(streaming: bool, cb: list) -> BaseChatModel:
+    """GitHub Models 기본 모델 (폴백용)."""
+    return ChatOpenAI(
+        model=os.getenv("GITHUB_MODEL", "gpt-4o"),
+        api_key=os.getenv("GITHUB_TOKEN", ""),
+        base_url=GITHUB_ENDPOINT,
+        streaming=streaming,
+        callbacks=cb,
+    )
+
+
 def get_lc_model(
     provider_key: str,
     streaming: bool = False,
@@ -111,6 +122,7 @@ def get_lc_model(
 ) -> BaseChatModel:
     """
     provider_key → LangChain BaseChatModel 반환.
+    API 키가 없는 provider는 GitHub Models로 자동 폴백.
 
     streaming=True + callbacks=[WSStreamHandler(...)] 조합으로
     on_llm_new_token 이벤트를 WebSocket으로 push.
@@ -120,48 +132,49 @@ def get_lc_model(
 
     # ── GitHub Models (OpenAI 호환 엔드포인트) ──
     if pk in _GITHUB_ALIASES:
-        model_name = _GITHUB_ALIASES[pk]
         return ChatOpenAI(
-            model=model_name,
+            model=_GITHUB_ALIASES[pk],
             api_key=os.getenv("GITHUB_TOKEN", ""),
             base_url=GITHUB_ENDPOINT,
             streaming=streaming,
             callbacks=cb,
         )
 
-    # ── OpenAI (파인튜닝 모델 자동 적용) ──
+    # ── OpenAI ──
     if pk in ("gpt", "gpt-4o", "openai"):
-        model_id = os.getenv("FINETUNED_MODEL", "gpt-4o")
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            return _github_model(streaming, cb)
         return ChatOpenAI(
-            model=model_id,
-            api_key=os.getenv("OPENAI_API_KEY", ""),
+            model=os.getenv("FINETUNED_MODEL", "gpt-4o"),
+            api_key=api_key,
             streaming=streaming,
             callbacks=cb,
         )
 
     # ── Anthropic Claude ──
     if pk == "claude":
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return _github_model(streaming, cb)   # 키 없으면 GitHub 폴백
         return ChatAnthropic(
             model="claude-3-5-sonnet-20241022",
-            api_key=os.getenv("ANTHROPIC_API_KEY", ""),
+            api_key=api_key,
             streaming=streaming,
             callbacks=cb,
         )
 
     # ── Google Gemini ──
     if pk == "gemini":
+        api_key = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+        if not api_key:
+            return _github_model(streaming, cb)   # 키 없으면 GitHub 폴백
         return ChatGoogleGenerativeAI(
-            model="gemini-pro",
-            google_api_key=os.getenv("GOOGLE_API_KEY", ""),
+            model="gemini-1.5-flash",             # gemini-pro 지원 종료 대응
+            google_api_key=api_key,
             streaming=streaming,
             callbacks=cb,
         )
 
     # ── 기본값: GitHub GPT-4o ──
-    return ChatOpenAI(
-        model="gpt-4o",
-        api_key=os.getenv("GITHUB_TOKEN", ""),
-        base_url=GITHUB_ENDPOINT,
-        streaming=streaming,
-        callbacks=cb,
-    )
+    return _github_model(streaming, cb)

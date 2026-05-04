@@ -50,7 +50,10 @@ _vectorstore: Optional[VectorStore] = None
 def _get_vectorstore() -> VectorStore:
     global _vectorstore
     if _vectorstore is None:
-        from langchain_community.vectorstores import Chroma
+        try:
+            from langchain_chroma import Chroma          # 신버전 패키지
+        except ImportError:
+            from langchain_community.vectorstores import Chroma  # 구버전 폴백
         _vectorstore = Chroma(
             collection_name="agent_memory_lc",
             embedding_function=_get_embeddings(),
