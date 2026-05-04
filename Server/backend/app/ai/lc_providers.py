@@ -7,17 +7,53 @@ LangChain ChatModel 팩토리 + WebSocket 스트리밍 콜백 핸들러
 """
 
 from __future__ import annotations
+import asyncio
 import os
 from typing import Any
 
 from dotenv import load_dotenv
 from langchain_core.language_models import BaseChatModel
 from langchain_core.callbacks import AsyncCallbackHandler
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv(override=True, encoding="utf-8")
+
+# GitHub Models 동시 요청 제한: 최대 2개
+# 모든 LLM 호출은 이 세마포어를 통과해야 함
+_LLM_SEMAPHORE = asyncio.Semaphore(2)
+
+
+async def safe_ainvoke(
+    model: BaseChatModel,
+    messages: list,
+    config: RunnableConfig | None = None,
+    max_retries: int = 4,
+    base_delay: float = 1.5,
+):
+    """
+    Rate limit(429) 보호 래퍼.
+    - Semaphore(2): 동시 호출을 2개 이하로 제한
+    - 지수 백오프: 429 발생 시 1.5s → 3s → 6s → 12s 후 재시도
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            async with _LLM_SEMAPHORE:
+                if config is not None:
+                    return await model.ainvoke(messages, config=config)
+                return await model.ainvoke(messages)
+        except Exception as e:
+            msg = str(e)
+            if "429" in msg or "RateLimit" in msg or "rate_limit" in msg.lower():
+                delay = base_delay * (2 ** attempt)
+                await asyncio.sleep(delay)
+                last_exc = e
+                continue
+            raise   # 429 외 오류는 즉시 재발생
+    raise last_exc  # type: ignore[misc]
 
 GITHUB_ENDPOINT = "https://models.inference.ai.azure.com"
 

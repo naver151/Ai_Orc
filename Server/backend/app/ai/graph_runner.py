@@ -27,7 +27,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 
 from app.ai.graph_state import GraphState, SubTask
-from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler
+from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke
 from app.ai.lc_memory import save_agent_memory, build_rag_context
 
 _ORCHESTRATE_RE = re.compile(r"<ORCHESTRATE>(.*?)</ORCHESTRATE>", re.DOTALL)
@@ -143,10 +143,11 @@ async def plan_node(state: GraphState) -> dict:
     # 메모리 주입
     enriched = _inject_memory(manager, text)
 
-    # 조용히 호출 (스트리밍 없음)
+    # 조용히 호출 (스트리밍 없음, rate limit 보호)
     model = get_lc_model(provider_key, streaming=False)
     try:
-        resp = await model.ainvoke(
+        resp = await safe_ainvoke(
+            model,
             _build_messages(system, enriched),
             config=RunnableConfig(callbacks=[]),
         )
@@ -246,7 +247,7 @@ async def worker_node(state: GraphState) -> dict:
 
     result = ""
     try:
-        resp = await model.ainvoke(_build_messages("", enriched), config=cfg)
+        resp = await safe_ainvoke(model, _build_messages("", enriched), config=cfg)
         result = resp.content
     except asyncio.CancelledError:
         result = ""
@@ -320,7 +321,7 @@ async def synthesize_node(state: GraphState) -> dict:
 
     synthesis = ""
     try:
-        resp = await model.ainvoke(_build_messages(system, synthesis_prompt), config=cfg)
+        resp = await safe_ainvoke(model, _build_messages(system, synthesis_prompt), config=cfg)
         synthesis = resp.content
     except asyncio.CancelledError:
         synthesis = ""
@@ -395,8 +396,8 @@ async def review_node(state: GraphState) -> dict:
 
         feedback = ""
         try:
-            resp     = await model.ainvoke(
-                _build_messages(_REVIEWER_SYSTEM, prompt), config=cfg
+            resp     = await safe_ainvoke(
+                model, _build_messages(_REVIEWER_SYSTEM, prompt), config=cfg
             )
             feedback = resp.content
         except asyncio.CancelledError:

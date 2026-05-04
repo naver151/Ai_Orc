@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.ai.agent_state import AgentState, AgentManager, agent_manager   # noqa: F401 (re-export)
-from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler
+from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke
 from app.ai.graph_runner import orchestration_graph
 from app.ai.graph_state import GraphState
 from app.ai.lc_memory import save_agent_memory, build_rag_context
@@ -44,7 +44,7 @@ class _Runner:
 
         result = ""
         try:
-            resp = await model.ainvoke([HumanMessage(content=enriched)], config=cfg)
+            resp = await safe_ainvoke(model, [HumanMessage(content=enriched)], config=cfg)
             result = resp.content
         except asyncio.CancelledError:
             pass
