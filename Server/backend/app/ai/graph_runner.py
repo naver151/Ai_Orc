@@ -19,6 +19,8 @@ import json
 import re
 import asyncio
 
+_SCORE_RE = re.compile(r"⭐\s*점수\s*:\s*(\d+)\s*/\s*10", re.IGNORECASE)
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
@@ -341,10 +343,12 @@ async def synthesize_node(state: GraphState) -> dict:
 _REVIEWER_SYSTEM = (
     "당신은 AI 팀의 전문 검토자입니다.\n"
     "팀원의 작업 결과물을 검토하고 명확하고 건설적인 피드백을 제공합니다.\n"
-    "피드백 형식:\n"
+    "반드시 아래 형식을 그대로 사용하세요:\n\n"
     "✅ 잘된 점: (2-3줄)\n"
     "⚠️ 개선 필요: (2-3줄, 없으면 '없음')\n"
-    "📋 종합: 합격 / 보완 필요 (한 줄)"
+    "📋 종합: 합격 / 보완 필요 (한 줄)\n"
+    "⭐ 점수: X/10  ← 반드시 이 형식으로, X는 1~10 사이 정수\n\n"
+    "점수 기준: 10=완벽, 8-9=우수, 6-7=양호, 4-5=보통, 1-3=미흡"
 )
 
 
@@ -401,10 +405,15 @@ async def review_node(state: GraphState) -> dict:
             feedback = f"[검토 오류] {e}"
             await ws.send_json({"type": "log", "aiName": worker_name, "message": feedback})
 
+        # 점수 파싱 (⭐ 점수: X/10)
+        score_match = _SCORE_RE.search(feedback)
+        score = int(score_match.group(1)) if score_match else None
+
         await ws.send_json({
             "type":     "review_done",
             "aiName":   worker_name,
             "feedback": feedback,
+            "score":    score,          # 1~10 정수, 파싱 실패 시 null
         })
 
         all_feedback.append(f"[{worker_name} 검토]\n{feedback}")

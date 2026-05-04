@@ -721,14 +721,41 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
             break
           }
 
-          // 개별 워커 리뷰 완료 (피드백 배지)
+          // 개별 워커 리뷰 완료 (피드백 박스 + 점수 배지)
           case 'review_done': {
+            const score = evt.score   // 1~10 or null
+            const a     = agents.find(x => x.name === aiName)
+
+            // ── 점수 색상 결정 ──
+            const scoreColor =
+              score == null   ? '#888' :
+              score >= 8      ? 'var(--teal)' :
+              score >= 5      ? '#f5a623' : '#ff5555'
+
+            // ── 에이전트 패널 패 좌측에 점수 배지 추가 ──
+            const panel = nameToPanel[aiName]
+            if (panel && score != null) {
+              const badge = document.createElement('div')
+              badge.className = styles.scoreBadge
+              badge.style.background = `${scoreColor}22`
+              badge.style.color       = scoreColor
+              badge.style.borderColor = `${scoreColor}55`
+              badge.textContent = `${score}/10`
+              // aInfo 다음에 삽입
+              const aInfo = panel.querySelector(`.${styles.aInfo}`)
+              if (aInfo) aInfo.insertAdjacentElement('afterend', badge)
+            }
+
+            // ── 스트림에 피드백 박스 ──
             const sb = nameToSb[aiName]
             if (sb && evt.feedback) {
+              const scoreHTML = score != null
+                ? `<span class="${styles.reviewScore}" style="background:${scoreColor}22;color:${scoreColor};border-color:${scoreColor}55">${score}/10</span>`
+                : ''
               const box = document.createElement('div')
               box.className = styles.reviewBox
               box.innerHTML =
-                `<div class="${styles.reviewBoxTitle}">📋 리뷰어 피드백</div>` +
+                `<div class="${styles.reviewBoxTitle}">📋 리뷰어 피드백 ${scoreHTML}</div>` +
                 `<div class="${styles.reviewBoxBody}">${evt.feedback.replace(/\n/g, '<br>')}</div>`
               sb.appendChild(box)
               stream.scrollTop = stream.scrollHeight
