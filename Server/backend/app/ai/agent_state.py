@@ -14,12 +14,14 @@ class AgentState:
     """에이전트 슬롯의 제어 상태 (pause / resume / kill)."""
 
     def __init__(self, ai_name: str, provider_key: str = "github"):
-        self.ai_name      = ai_name
-        self.provider_key = provider_key
-        self.status       = "READY"
+        self.ai_name          = ai_name
+        self.provider_key     = provider_key
+        self.status           = "READY"
         self.current_task: Optional[asyncio.Task] = None
-        self.is_killed    = False
-        self._pause_event = asyncio.Event()
+        self.is_killed        = False
+        self.is_manager_flag  = False   # spawn 시 명시적으로 설정
+        self.role             = ""
+        self._pause_event     = asyncio.Event()
         self._pause_event.set()  # 기본: 실행 가능 상태
 
     def pause(self) -> None:
@@ -67,9 +69,15 @@ class AgentManager:
             self._agents.pop(ai_name).kill()
 
     def is_manager(self, ai_name: str) -> bool:
-        if not self._agents:
-            return False
-        return list(self._agents.keys())[0] == ai_name
+        """명시적 플래그 우선, 없으면 등록 순서(첫 번째) 폴백."""
+        state = self._agents.get(ai_name)
+        if state and state.is_manager_flag:
+            return True
+        # 폴백: 아무도 is_manager_flag가 없으면 첫 번째가 관리자
+        if not any(s.is_manager_flag for s in self._agents.values()):
+            if self._agents:
+                return list(self._agents.keys())[0] == ai_name
+        return False
 
     def get_worker_names(self, manager_name: str) -> list[str]:
         return [n for n in self._agents if n != manager_name]

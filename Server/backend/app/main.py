@@ -87,17 +87,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # ── spawn: 에이전트 등록 ─────────────────────────
             if action == "spawn":
-                provider = data.get("provider", "claude")
+                provider   = data.get("provider", "github")
+                is_manager = data.get("isManager", False)
+                role       = data.get("role", "")
                 state = agent_manager.get_or_create(ai_name, provider)
+                state.is_manager_flag = is_manager   # 명시적 플래그 저장
+                state.role = role
                 await websocket.send_json({
                     "type": "status",
                     "aiName": ai_name,
                     "status": "READY",
-                })
-                await websocket.send_json({
-                    "type": "log",
-                    "aiName": ai_name,
-                    "message": f"[{ai_name}] 에이전트 준비 완료 — 모델: {state.model_name}",
                 })
 
             # ── prompt: AI 호출 및 스트리밍 ──────────────────

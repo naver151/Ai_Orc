@@ -3,7 +3,7 @@ import styles from './AgentWorkspace.module.css'
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-const BACKEND = 'http://localhost:8000'
+const WS_URL  = 'ws://localhost:8000/ws'
 
 // ── 파일명 추론 ────────────────────────────────────────────
 function inferFilename(lang) {
@@ -127,7 +127,7 @@ function renderResult(container, text, stylesModule) {
 
       const lineEl = document.createElement('div')
       lineEl.className = s.codeLine
-      lineEl.textContent = line === '' ? '\u00A0' : line
+      lineEl.textContent = line === '' ? ' ' : line
       codeContent.appendChild(lineEl)
     })
 
@@ -138,52 +138,8 @@ function renderResult(container, text, stylesModule) {
   })
 }
 
-// ── 에이전트 작업 실행 스트리밍 ──────────────────────────────
-// previousResults: [{agentName, result}] — 앞 에이전트들의 출력
-function _getUid() {
-  try { return JSON.parse(localStorage.getItem('aiorc_user'))?.uid ?? null } catch { return null }
-}
-
-async function streamAgentOutput(originalRequest, agentTask, roleKey, onChunk, previousResults = []) {
-  const res = await fetch(`${BACKEND}/agent/execute`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      original_request: originalRequest,
-      agent_task: agentTask,
-      role_key: roleKey,
-      previous_results: previousResults,
-      user_uid: _getUid(),
-    }),
-  })
-  if (!res.ok) throw new Error(`에이전트 실행 오류: ${res.status}`)
-
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    const lines = buf.split('\n')
-    buf = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      try {
-        const data = JSON.parse(line.slice(6))
-        if (data.type === 'text') onChunk(data.chunk)
-        else if (data.type === 'error') { const e = new Error(data.message); e.isServerError = true; throw e }
-      } catch (e) {
-        if (e.isServerError) throw e
-      }
-    }
-  }
-}
-
-// ── 결과 패널 표시 헬퍼 ────────────────────────────────────
+// ── 결과 패널 표시 ────────────────────────────────────────
 function showResult(result, stream, work, styles, agents, lastAgentOutput) {
-  // 콘텐츠 먼저 설정
   const resultContent = result.querySelector(`.${styles.resultContent}`)
   if (resultContent) {
     if (lastAgentOutput) {
@@ -196,7 +152,6 @@ function showResult(result, stream, work, styles, agents, lastAgentOutput) {
     }
   }
 
-  // 오버레이 위치 먼저 적용 후 페이드인
   result.classList.add(styles.resultOverlay)
   result.scrollTop = 0
 
@@ -207,7 +162,6 @@ function showResult(result, stream, work, styles, agents, lastAgentOutput) {
     })
   })
 
-  // 로그확인 버튼 추가
   const header = work.querySelector(`.${styles.workHeader}`)
   if (header && !header.querySelector(`.${styles.logViewBtn}`)) {
     const logBtn = document.createElement('button')
@@ -234,6 +188,36 @@ function showResult(result, stream, work, styles, agents, lastAgentOutput) {
   }
 }
 
+// ── provider 키 변환 ──────────────────────────────────────
+function toProviderKey(aiType) {
+  if (aiType === 'claude')  return 'claude'
+  if (aiType === 'gemini')  return 'gemini'
+  if (aiType === 'gpt')     return 'github'
+  return 'github'
+}
+
+function _getUid() {
+  try { return JSON.parse(localStorage.getItem('aiorc_user'))?.uid ?? null } catch { return null }
+}
+
+// ── 에이전트 패널 HTML 템플릿 ─────────────────────────────
+function makePanelHTML(a, s) {
+  return `
+    <div class="${s.aDot} ${s.pulse}" style="background:${a.color}"></div>
+    <div class="${s.aInfo}">
+      <div class="${s.aName}">${a.name}</div>
+      <div class="${s.aAi}" style="color:${a.color}">${a.aiType?.toUpperCase() ?? 'AI'}</div>
+      ${a.task ? `<div class="${s.aTask}">${a.task}</div>` : ''}
+    </div>
+    <div class="${s.aControls}">
+      <button class="${s.ctrlBtn} ${s.pauseBtn}" data-name="${a.name}" data-paused="false" title="일시정지">⏸</button>
+      <button class="${s.ctrlBtn} ${s.killBtn}"  data-name="${a.name}" title="종료">✕</button>
+    </div>
+    <div class="${s.aSpinner}" style="border-top-color:${a.color}"></div>
+  `
+}
+
+// ── 메인 컴포넌트 ─────────────────────────────────────────
 export default function AgentWorkspace({ agents, request, onDone, instant = false }) {
   const sceneRef   = useRef(null)
   const dotContRef = useRef(null)
@@ -242,6 +226,16 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
   const streamRef  = useRef(null)
   const resultRef  = useRef(null)
   const runningRef = useRef(false)
+  const wsRef      = useRef(null)   // ← WebSocket 참조 (컨트롤 버튼에서 공유)
+
+  // 컴포넌트 언마운트 시 WebSocket 정리
+  useEffect(() => {
+    return () => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close()
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (!agents?.length || runningRef.current) return
@@ -267,7 +261,6 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
     list.innerHTML = ''
     stream.innerHTML = ''
 
-    // result 초기화
     result.style.opacity = '0'
     result.style.transition = ''
     result.style.pointerEvents = ''
@@ -350,18 +343,10 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
 
       // ── 5. 에이전트 패널 생성 ─────────────────────────
       const panelEls = []
-      agents.forEach((a) => {
+      agents.forEach(a => {
         const el = document.createElement('div')
         el.className = styles.agentItem
-        el.innerHTML = `
-          <div class="${styles.aDot} ${styles.pulse}" style="background:${a.color}"></div>
-          <div class="${styles.aInfo}">
-            <div class="${styles.aName}">${a.name}</div>
-            <div class="${styles.aAi}" style="color:${a.color}">${a.aiType?.toUpperCase() ?? 'AI'}</div>
-            ${a.task ? `<div class="${styles.aTask}">${a.task}</div>` : ''}
-          </div>
-          <div class="${styles.aSpinner}" style="border-top-color:${a.color}"></div>
-        `
+        el.innerHTML = makePanelHTML(a, styles)
         list.appendChild(el)
         panelEls.push(el)
       })
@@ -398,7 +383,6 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
       const liveTag = work.querySelector(`.${styles.liveTag}`)
       if (liveTag) liveTag.classList.add(styles.liveShow)
 
-      // ── 8. 에이전트별 실시간 작업 실행 ──────────────
       await runAgents(taskRequest, agents, panelEls, stream, work, result)
 
     } else {
@@ -411,20 +395,11 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
       work.style.opacity = '1'
       work.style.pointerEvents = 'all'
 
-      // 에이전트 패널 생성 + 즉시 표시
       const panelEls = []
-      agents.forEach((a) => {
+      agents.forEach(a => {
         const el = document.createElement('div')
         el.className = `${styles.agentItem} ${styles.show}`
-        el.innerHTML = `
-          <div class="${styles.aDot} ${styles.pulse}" style="background:${a.color}"></div>
-          <div class="${styles.aInfo}">
-            <div class="${styles.aName}">${a.name}</div>
-            <div class="${styles.aAi}" style="color:${a.color}">${a.aiType?.toUpperCase() ?? 'AI'}</div>
-            ${a.task ? `<div class="${styles.aTask}">${a.task}</div>` : ''}
-          </div>
-          <div class="${styles.aSpinner}" style="border-top-color:${a.color}"></div>
-        `
+        el.innerHTML = makePanelHTML(a, styles)
         list.appendChild(el)
         panelEls.push(el)
       })
@@ -432,22 +407,21 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
       const liveTag = work.querySelector(`.${styles.liveTag}`)
       if (liveTag) liveTag.classList.add(styles.liveShow)
 
-      // ── 에이전트별 실시간 작업 실행 ──────────────────
       await runAgents(taskRequest, agents, panelEls, stream, work, result)
     }
   }
 
-  // ── LangGraph SSE 기반 에이전트 실행 ────────────────────────
+  // ── WebSocket 기반 에이전트 실행 ──────────────────────────
   async function runAgents(taskRequest, agents, panelEls, stream, work, result) {
-    const count   = agents.length
+    const count    = agents.length
     const progFill = work.querySelector(`.${styles.progFill}`)
     const progText = work.querySelector(`.${styles.progText}`)
     const liveTag  = work.querySelector(`.${styles.liveTag}`)
 
-    // ── 에이전트 이름 → 패널/섹션바디 맵 ──────────────────────
+    // 에이전트 이름 → 패널/섹션바디 맵
     const nameToPanel = {}
     const nameToSb    = {}
-    const nameToState = {}  // { lineBuffer, currentLineEl, fullText }
+    const nameToState = {}
 
     agents.forEach((a, i) => {
       nameToPanel[a.name] = panelEls[i]
@@ -458,7 +432,7 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
         <div class="${styles.sectionLabel}">
           <div class="${styles.sectionDot}" style="background:${a.color}"></div>
           <span class="${styles.sectionName}" style="color:${a.color}cc">${a.name}</span>
-          <span class="${styles.sectionBadge}" style="background:${a.color}18;color:${a.color}">GITHUB</span>
+          <span class="${styles.sectionBadge}" style="background:${a.color}18;color:${a.color}">${(a.aiType || 'AI').toUpperCase()}</span>
         </div>
         ${a.task ? `<div class="${styles.sectionTask}" style="border-left-color:${a.color}40">배정 업무: ${a.task}</div>` : ''}
         <div class="${styles.sectionBody}" id="lgsb-${i}"></div>
@@ -472,22 +446,22 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
     })
     stream.scrollTop = stream.scrollHeight
 
-    // 섹션 추가 후 모든 패널 running 상태로 (병렬)
     agents.forEach((_, i) => panelEls[i].classList.add(styles.running))
 
     let doneCount     = 0
     let lastOutput    = ''
     let synthesisText = ''
 
+    // 토큰 단위 스트리밍을 라인 버퍼로 렌더링
     const flushChunk = (agentName, chunk) => {
       const a     = agents.find(x => x.name === agentName)
       const sb    = nameToSb[agentName]
       const state = nameToState[agentName]
       if (!sb || !state) return
 
-      state.fullText    += chunk
-      state.lineBuffer  += chunk
-      lastOutput         = state.fullText
+      state.fullText   += chunk
+      state.lineBuffer += chunk
+      lastOutput        = state.fullText
 
       const parts = state.lineBuffer.split('\n')
       const flush = (text, live) => {
@@ -524,88 +498,212 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
       }
     }
 
+    // 에이전트 완료 처리
     const markDone = (agentName) => {
       const panel = nameToPanel[agentName]
-      if (!panel) return
-      panel.classList.remove(styles.running)
+      if (!panel || panel.classList.contains(styles.done)) return
+      panel.classList.remove(styles.running, styles.paused)
       panel.classList.add(styles.done)
       const spinner = panel.querySelector(`.${styles.aSpinner}`)
       if (spinner) {
         const a = agents.find(x => x.name === agentName)
         spinner.outerHTML = `<span class="${styles.aCheck}" style="color:${a?.color ?? '#4caf82'}">✓</span>`
       }
+      // 완료된 에이전트의 컨트롤 버튼 비활성화
+      panel.querySelectorAll(`.${styles.ctrlBtn}`).forEach(btn => {
+        btn.disabled = true
+        btn.style.opacity = '0.3'
+      })
       doneCount++
       if (progFill) progFill.style.width = Math.round((doneCount / count) * 100) + '%'
-      if (progText) progText.textContent = `${doneCount} / ${count}`
+      if (progText) progText.textContent  = `${doneCount} / ${count}`
     }
 
-    // ── /orchestrate/stream SSE 수신 ────────────────────────
+    // ── WebSocket 연결 ────────────────────────────────────
+    let ws
     try {
-      const res = await fetch(`${BACKEND}/orchestrate/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          request: taskRequest,
-          agents:  agents.map(a => ({ name: a.name, roleKey: a.roleKey, task: a.task, aiType: a.aiType })),
-          user_uid: _getUid(),
-        }),
+      ws = new WebSocket(WS_URL)
+      wsRef.current = ws
+
+      await new Promise((resolve, reject) => {
+        ws.onopen  = resolve
+        ws.onerror = () => reject(new Error('WebSocket 연결 실패'))
+        setTimeout(() => reject(new Error('연결 타임아웃')), 5000)
       })
-      if (!res.ok) throw new Error(`서버 오류: ${res.status}`)
+    } catch (e) {
+      console.error('[WS 연결 실패]', e)
+      // 연결 실패 시 fallback 메시지
+      agents.forEach(a => {
+        if (nameToSb[a.name]) flushChunk(a.name, `[오류] 백엔드 서버에 연결할 수 없습니다.\n`)
+      })
+      if (liveTag) liveTag.classList.remove(styles.liveShow)
+      if (progText) progText.textContent = '연결 실패'
+      return
+    }
 
-      const reader  = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
+    // ── 에이전트 등록 (관리자 → 워커 순) ─────────────────
+    agents.forEach((a, i) => {
+      ws.send(JSON.stringify({
+        action:    'spawn',
+        aiName:    a.name,
+        provider:  toProviderKey(a.aiType),
+        isManager: i === 0,
+        role:      a.roleKey ?? '',
+      }))
+    })
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop() ?? ''
+    await sleep(150)  // spawn 처리 대기
 
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          let evt
-          try { evt = JSON.parse(line.slice(6)) } catch { continue }
+    // ── 컨트롤 버튼 이벤트 연결 ──────────────────────────
+    agents.forEach(a => {
+      const panel = nameToPanel[a.name]
+      if (!panel) return
 
-          const { type, aiName, message, status, percent } = evt
+      const pauseBtn = panel.querySelector(`.${styles.pauseBtn}`)
+      const killBtn  = panel.querySelector(`.${styles.killBtn}`)
 
-          if (type === 'log' && aiName && message) {
+      if (pauseBtn) {
+        pauseBtn.addEventListener('click', () => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return
+          const isPaused = pauseBtn.dataset.paused === 'true'
+          if (isPaused) {
+            ws.send(JSON.stringify({ action: 'resume', aiName: a.name }))
+            pauseBtn.textContent       = '⏸'
+            pauseBtn.dataset.paused    = 'false'
+            pauseBtn.title             = '일시정지'
+            panel.classList.remove(styles.paused)
+          } else {
+            ws.send(JSON.stringify({ action: 'pause', aiName: a.name }))
+            pauseBtn.textContent       = '▶'
+            pauseBtn.dataset.paused    = 'true'
+            pauseBtn.title             = '재개'
+            panel.classList.add(styles.paused)
+          }
+        })
+      }
+
+      if (killBtn) {
+        killBtn.addEventListener('click', () => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return
+          ws.send(JSON.stringify({ action: 'kill', aiName: a.name }))
+          // UI 즉시 반영
+          panel.classList.remove(styles.running, styles.paused)
+          panel.classList.add(styles.killed)
+          panel.querySelectorAll(`.${styles.ctrlBtn}`).forEach(b => {
+            b.disabled = true; b.style.opacity = '0.3'
+          })
+          flushChunk(a.name, '\n[종료됨]\n')
+        })
+      }
+    })
+
+    // ── 관리자에게 프롬프트 전송 ──────────────────────────
+    ws.send(JSON.stringify({
+      action: 'prompt',
+      aiName: agents[0].name,
+      text:   taskRequest,
+    }))
+
+    // ── 메시지 수신 루프 ──────────────────────────────────
+    await new Promise((resolve) => {
+      ws.onmessage = (event) => {
+        let evt
+        try { evt = JSON.parse(event.data) } catch { return }
+
+        const { type, aiName, message, status, task, from, to } = evt
+
+        switch (type) {
+
+          // 토큰 스트리밍
+          case 'log':
+            if (!aiName || !message) break
             if (nameToSb[aiName]) {
               flushChunk(aiName, message)
             } else {
-              // 종합 단계 (관리자) 텍스트
+              // 관리자 종합 단계 텍스트
               synthesisText += message
             }
-          } else if (type === 'status' && status === 'COMPLETED' && nameToPanel[aiName]) {
-            markDone(aiName)
-          } else if (type === 'orchestration_synthesis') {
-            // 종합 시작 — 진행 표시
-            if (progText) progText.textContent = '종합 중...'
-          } else if (type === 'orchestration_done') {
-            // 모든 작업 완료
-          } else if (type === 'error') {
-            console.error('[LangGraph SSE 오류]', message)
+            break
+
+          // 에이전트 상태 변경
+          case 'status':
+            if (!aiName) break
+            if (status === 'COMPLETED') {
+              markDone(aiName)
+            } else if (status === 'STOPPED') {
+              nameToPanel[aiName]?.classList.add(styles.paused)
+            } else if (status === 'RUNNING') {
+              nameToPanel[aiName]?.classList.remove(styles.paused)
+            }
+            break
+
+          // 현재 수행 중인 태스크 표시
+          case 'current_task':
+            if (!aiName) break
+            if (task) {
+              // 섹션 태스크 라벨 업데이트
+              const sb = nameToSb[aiName]
+              if (sb) {
+                const taskEl = sb.parentElement?.querySelector(`.${styles.sectionTask}`)
+                if (taskEl) taskEl.textContent = task
+              }
+            }
+            break
+
+          // 서브태스크 배정 이벤트
+          case 'subtask_assign': {
+            const targetSb = nameToSb[to] || nameToSb[from]
+            if (targetSb) {
+              const el = document.createElement('div')
+              el.className = `${styles.logLine} ${styles.logShow} ${styles.assignLog}`
+              el.textContent = `▸ [${from} → ${to}] ${message || ''}`
+              targetSb.appendChild(el)
+              stream.scrollTop = stream.scrollHeight
+            }
+            break
           }
+
+          // 오케스트레이션 시작
+          case 'orchestration_start':
+            if (progText) progText.textContent = '실행 중...'
+            break
+
+          // 종합 단계 시작
+          case 'orchestration_synthesis':
+            if (progText) progText.textContent = '종합 중...'
+            break
+
+          // 오케스트레이션 완료
+          case 'orchestration_done':
+            ws.close()
+            resolve()
+            break
+
+          case 'error':
+            console.error('[WS 서버 오류]', message)
+            break
+
+          default:
+            break
         }
       }
-    } catch (e) {
-      console.error('[orchestrate/stream 실패]', e)
-    }
 
-    // 미완료 패널 정리
+      ws.onerror = (e) => { console.error('[WS 오류]', e); resolve() }
+      ws.onclose = ()  => resolve()
+    })
+
+    wsRef.current = null
+
+    // ── 미완료 패널 정리 ─────────────────────────────────
     agents.forEach(a => {
       if (nameToPanel[a.name]?.classList.contains(styles.running)) {
         markDone(a.name)
       }
-      // 버퍼에 남은 텍스트 flush
       const state = nameToState[a.name]
-      if (state?.lineBuffer?.trim()) {
-        flushChunk(a.name, '')
-      }
+      if (state?.lineBuffer?.trim()) flushChunk(a.name, '')
     })
 
-    // ── 완료 ──
+    // ── 완료 처리 ─────────────────────────────────────────
     if (liveTag) liveTag.classList.remove(styles.liveShow)
     if (progText) progText.textContent = '완료 ✓'
     if (progFill) progFill.style.background = 'var(--teal)'
