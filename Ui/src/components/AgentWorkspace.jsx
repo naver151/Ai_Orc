@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import styles from './AgentWorkspace.module.css'
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -226,7 +226,37 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
   const streamRef  = useRef(null)
   const resultRef  = useRef(null)
   const runningRef = useRef(false)
-  const wsRef      = useRef(null)   // ← WebSocket 참조 (컨트롤 버튼에서 공유)
+  const wsRef      = useRef(null)      // WebSocket (컨트롤 버튼·개입 입력에서 공유)
+  const agentsRef  = useRef([])        // 현재 에이전트 목록 (개입 UI용)
+
+  // ── 실시간 개입 UI 상태 ───────────────────────────────
+  const [ivOpen,   setIvOpen]   = useState(false)   // 개입 패널 표시 여부
+  const [ivTarget, setIvTarget] = useState('')       // 개입 대상 에이전트 이름
+  const [ivText,   setIvText]   = useState('')       // 입력 텍스트
+
+  // 개입 전송
+  const sendIntervention = () => {
+    const ws   = wsRef.current
+    const text = ivText.trim()
+    if (!ws || ws.readyState !== WebSocket.OPEN || !text || !ivTarget) return
+
+    // 스트림에 개입 로그 표시
+    const stream = streamRef.current
+    if (stream) {
+      const el = document.createElement('div')
+      el.className = styles.ivLog
+      el.innerHTML =
+        `<span class="${styles.ivLogIcon}">✎</span>` +
+        `<span class="${styles.ivLogTarget}">${ivTarget}</span>` +
+        `<span class="${styles.ivLogText}">${text}</span>`
+      stream.appendChild(el)
+      stream.scrollTop = stream.scrollHeight
+    }
+
+    // 백엔드로 전송 — prompt 액션이 실행 중 태스크를 취소하고 새 방향으로 재시작
+    ws.send(JSON.stringify({ action: 'prompt', aiName: ivTarget, text }))
+    setIvText('')
+  }
 
   // 컴포넌트 언마운트 시 WebSocket 정리
   useEffect(() => {
@@ -541,6 +571,11 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
       return
     }
 
+    // ── 개입 UI 활성화 ────────────────────────────────────
+    agentsRef.current = agents
+    setIvTarget(agents[0]?.name ?? '')
+    setIvOpen(true)
+
     // ── 에이전트 등록 (관리자 → 워커 순) ─────────────────
     agents.forEach((a, i) => {
       ws.send(JSON.stringify({
@@ -693,6 +728,7 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
     })
 
     wsRef.current = null
+    setIvOpen(false)   // 개입 패널 닫기
 
     // ── 미완료 패널 정리 ─────────────────────────────────
     agents.forEach(a => {
@@ -755,6 +791,52 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
             </div>
 
             <div ref={streamRef} className={styles.streamBody} />
+
+            {/* ── 실시간 개입 입력 바 ── */}
+            {ivOpen && (
+              <div className={styles.ivBar}>
+                <span className={styles.ivBarLabel}>✎ 개입</span>
+
+                {/* 대상 에이전트 선택 */}
+                <select
+                  className={styles.ivSelect}
+                  value={ivTarget}
+                  onChange={e => setIvTarget(e.target.value)}
+                >
+                  {agentsRef.current.map((a, i) => (
+                    <option key={a.name} value={a.name}>
+                      {i === 0 ? `${a.name} (관리자)` : a.name}
+                    </option>
+                  ))}
+                </select>
+
+                {/* 개입 텍스트 입력 */}
+                <input
+                  className={styles.ivInput}
+                  value={ivText}
+                  onChange={e => setIvText(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      sendIntervention()
+                    }
+                  }}
+                  placeholder={
+                    ivTarget === agentsRef.current[0]?.name
+                      ? '전체 방향을 바꾸려면 입력하세요... (재시작됩니다)'
+                      : `${ivTarget}에게 새 지시를 입력하세요...`
+                  }
+                />
+
+                <button
+                  className={styles.ivBtn}
+                  onClick={sendIntervention}
+                  disabled={!ivText.trim()}
+                >
+                  전송
+                </button>
+              </div>
+            )}
 
             <div className={styles.progressBar}>
               <div className={styles.progFill} />

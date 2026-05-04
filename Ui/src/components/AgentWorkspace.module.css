@@ -742,6 +742,127 @@
   background: var(--border);
 }
 
+/* ── 실시간 개입 입력 바 ─────────────────────────── */
+.ivBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  animation: ivSlideIn 0.25s ease;
+}
+
+@keyframes ivSlideIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.ivBarLabel {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ivSelect {
+  font-size: 11px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--text2);
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+  max-width: 130px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.ivSelect:focus {
+  border-color: var(--accent);
+}
+
+.ivInput {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.ivInput::placeholder {
+  color: var(--text3);
+  font-size: 11px;
+}
+.ivInput:focus {
+  border-color: var(--accent);
+}
+
+.ivBtn {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 5px 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+.ivBtn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+.ivBtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ── 개입 로그 (스트림에 표시) ───────────────────── */
+.ivLog {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(var(--accent-rgb, 124,109,250), 0.08);
+  border-left: 2px solid var(--accent);
+  margin: 6px 0;
+}
+
+.ivLogIcon {
+  font-size: 11px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.ivLogTarget {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.ivLogText {
+  font-size: 11px;
+  color: var(--text2);
+  font-style: italic;
+  word-break: break-word;
+}
+
 /* ── 키프레임 ────────────────────────────────────── */
 @keyframes pulseDot {
   0%, 100% { opacity: 1; transform: scale(1); }
