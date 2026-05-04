@@ -119,14 +119,17 @@ export default function AdminPage({ onBack }) {
                 <div>
                   <div className={styles.sectionTitle}>에이전트 작업</div>
                   <div className={styles.agentList}>
-                    {selected.subtasks.map((task, i) => (
-                      <div key={i} className={styles.agentRow}>
-                        <div className={styles.agentRowName}>
-                          {selected.worker_names?.[i] ?? `에이전트 ${i + 1}`}
+                    {selected.subtasks.map((task, i) => {
+                      // task는 문자열 또는 {worker_name, task} 객체
+                      const name = task?.worker_name ?? selected.worker_names?.[i] ?? `에이전트 ${i + 1}`
+                      const desc = task?.task ?? (typeof task === 'string' ? task : JSON.stringify(task))
+                      return (
+                        <div key={i} className={styles.agentRow}>
+                          <div className={styles.agentRowName}>{name}</div>
+                          <div>{desc}</div>
                         </div>
-                        <div>{task}</div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )}
@@ -136,16 +139,19 @@ export default function AdminPage({ onBack }) {
                 <div>
                   <div className={styles.sectionTitle}>에이전트 결과</div>
                   <div className={styles.agentList}>
-                    {selected.worker_results.map((result, i) => (
-                      <div key={i} className={styles.agentRow}>
-                        <div className={styles.agentRowName}>
-                          {selected.worker_names?.[i] ?? `에이전트 ${i + 1}`}
+                    {selected.worker_results.map((item, i) => {
+                      // item은 문자열 또는 {worker, result} 객체
+                      const name = item?.worker ?? selected.worker_names?.[i] ?? `에이전트 ${i + 1}`
+                      const text = item?.result ?? (typeof item === 'string' ? item : '')
+                      return (
+                        <div key={i} className={styles.agentRow}>
+                          <div className={styles.agentRowName}>{name}</div>
+                          <div style={{ whiteSpace: 'pre-wrap', marginTop: 6, fontSize: 12 }}>
+                            {text.length > 500 ? text.slice(0, 500) + '…' : text}
+                          </div>
                         </div>
-                        <div style={{ whiteSpace: 'pre-wrap', marginTop: 6, fontSize: 12 }}>
-                          {result?.length > 500 ? result.slice(0, 500) + '...' : result}
-                        </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )}

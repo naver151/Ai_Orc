@@ -703,6 +703,39 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
             if (progText) progText.textContent = '실행 중...'
             break
 
+          // 리뷰 단계 시작
+          case 'review_start':
+            if (progText) progText.textContent = '검토 중...'
+            break
+
+          // 개별 워커 리뷰 시작
+          case 'review_begin': {
+            const sb = nameToSb[aiName]
+            if (sb) {
+              const el = document.createElement('div')
+              el.className = `${styles.logLine} ${styles.logShow} ${styles.reviewLabel}`
+              el.textContent = '── 리뷰어 검토 중 ──'
+              sb.appendChild(el)
+              stream.scrollTop = stream.scrollHeight
+            }
+            break
+          }
+
+          // 개별 워커 리뷰 완료 (피드백 배지)
+          case 'review_done': {
+            const sb = nameToSb[aiName]
+            if (sb && evt.feedback) {
+              const box = document.createElement('div')
+              box.className = styles.reviewBox
+              box.innerHTML =
+                `<div class="${styles.reviewBoxTitle}">📋 리뷰어 피드백</div>` +
+                `<div class="${styles.reviewBoxBody}">${evt.feedback.replace(/\n/g, '<br>')}</div>`
+              sb.appendChild(box)
+              stream.scrollTop = stream.scrollHeight
+            }
+            break
+          }
+
           // 종합 단계 시작
           case 'orchestration_synthesis':
             if (progText) progText.textContent = '종합 중...'

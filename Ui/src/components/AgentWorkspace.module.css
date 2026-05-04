@@ -332,6 +332,43 @@
   margin: 4px 0;
 }
 
+/* ── 리뷰어 피드백 ───────────────────────────────────── */
+.reviewLabel {
+  font-family: var(--font-display) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.06em;
+  color: var(--teal) !important;
+  opacity: 0.7;
+  margin: 10px 0 4px;
+}
+
+.reviewBox {
+  border: 1px solid rgba(30, 200, 160, 0.25);
+  border-left: 3px solid var(--teal);
+  border-radius: 0 6px 6px 0;
+  background: rgba(30, 200, 160, 0.05);
+  padding: 10px 12px;
+  margin: 6px 0 12px;
+}
+
+.reviewBoxTitle {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--teal);
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.reviewBoxBody {
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ── 스트림 영역 (오른쪽) ────────────────────────── */
 .streamArea {
   flex: 1;

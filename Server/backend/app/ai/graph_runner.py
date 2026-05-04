@@ -292,9 +292,15 @@ async def synthesize_node(state: GraphState) -> dict:
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"final_synthesis": ""}
 
+    # 리뷰 피드백이 있으면 종합 프롬프트에 포함
+    review_fb = state.get("review_feedback", "")
+    review_section = f"\n\n[리뷰어 피드백]\n{review_fb}" if review_fb else ""
+
     synthesis_prompt = (
-        "팀원들의 작업이 완료 되었습니다. 결과를 종합하여 사용자에게 최종 답변을 작성해주세요.\n\n"
-        f"원래 요청: {state['user_prompt']}\n\n" + "\n\n".join(valid)
+        "팀원들의 작업이 완료되었습니다. 결과를 종합하여 사용자에게 최종 답변을 작성해주세요.\n\n"
+        f"원래 요청: {state['user_prompt']}\n\n"
+        + "\n\n".join(valid)
+        + review_section
     )
 
     # 종합 단계 알림
@@ -332,6 +338,80 @@ async def synthesize_node(state: GraphState) -> dict:
     return {"final_synthesis": synthesis}
 
 
+_REVIEWER_SYSTEM = (
+    "당신은 AI 팀의 전문 검토자입니다.\n"
+    "팀원의 작업 결과물을 검토하고 명확하고 건설적인 피드백을 제공합니다.\n"
+    "피드백 형식:\n"
+    "✅ 잘된 점: (2-3줄)\n"
+    "⚠️ 개선 필요: (2-3줄, 없으면 '없음')\n"
+    "📋 종합: 합격 / 보완 필요 (한 줄)"
+)
+
+
+async def review_node(state: GraphState) -> dict:
+    """
+    워커 결과물을 개별 검토하고 피드백 생성.
+    각 워커마다 review_feedback 메시지를 WebSocket으로 스트리밍.
+    """
+    ws           = state["websocket"]
+    manager      = state["manager_name"]
+    provider_key = state["provider_map"].get(manager, "github")
+    results      = state.get("worker_results", {})
+
+    if not results:
+        return {"review_feedback": ""}
+
+    await ws.send_json({"type": "review_start", "aiName": manager})
+
+    all_feedback: list[str] = []
+
+    for worker_name, result in results.items():
+        if not result or not result.strip():
+            continue
+
+        if await _check_control(state, manager):
+            break
+
+        prompt = (
+            f"원래 요청: {state['user_prompt']}\n\n"
+            f"[{worker_name}]의 작업 결과:\n{result[:2500]}\n\n"
+            "위 결과물을 검토하고 형식에 맞춰 피드백해주세요."
+        )
+
+        # 리뷰는 스트리밍으로 전송 (worker 이름을 aiName으로)
+        handler = ProgressWSStreamHandler(ws, worker_name)
+        cfg     = RunnableConfig(callbacks=[handler])
+        model   = get_lc_model(provider_key, streaming=True)
+
+        await ws.send_json({
+            "type":    "review_begin",
+            "aiName":  worker_name,
+            "message": f"[검토 시작] {worker_name}",
+        })
+
+        feedback = ""
+        try:
+            resp     = await model.ainvoke(
+                _build_messages(_REVIEWER_SYSTEM, prompt), config=cfg
+            )
+            feedback = resp.content
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            feedback = f"[검토 오류] {e}"
+            await ws.send_json({"type": "log", "aiName": worker_name, "message": feedback})
+
+        await ws.send_json({
+            "type":     "review_done",
+            "aiName":   worker_name,
+            "feedback": feedback,
+        })
+
+        all_feedback.append(f"[{worker_name} 검토]\n{feedback}")
+
+    return {"review_feedback": "\n\n".join(all_feedback)}
+
+
 # ── 라우팅 ────────────────────────────────────────────────────────────────────
 
 def route_after_plan(state: GraphState):
@@ -361,12 +441,13 @@ def build_graph():
 
     g.add_node("plan_node",       plan_node)
     g.add_node("worker_node",     worker_node)
+    g.add_node("review_node",     review_node)     # 워커 결과 개별 검토
     g.add_node("synthesize_node", synthesize_node)
 
     g.add_edge(START, "plan_node")
-    # dispatch_node 제거 — Send는 라우팅 함수(route_after_plan)에서 직접 반환
     g.add_conditional_edges("plan_node", route_after_plan)
-    g.add_edge("worker_node",     "synthesize_node")
+    g.add_edge("worker_node",     "review_node")   # 워커 → 리뷰
+    g.add_edge("review_node",     "synthesize_node")
     g.add_edge("synthesize_node", END)
 
     return g.compile()
