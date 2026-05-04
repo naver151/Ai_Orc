@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import re
 import asyncio
-from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -26,10 +25,11 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 
 from app.ai.graph_state import GraphState, SubTask
-from app.ai.lc_providers import get_lc_model, WSStreamHandler
+from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler
 from app.ai.lc_memory import save_agent_memory, build_rag_context
 
 _ORCHESTRATE_RE = re.compile(r"<ORCHESTRATE>(.*?)</ORCHESTRATE>", re.DOTALL)
+
 
 # ── 관리자 시스템 프롬프트 ────────────────────────────────────────────────────
 
@@ -77,23 +77,7 @@ _MANAGER_SYSTEM = (
 )
 
 
-# ── 개선된 WebSocket 스트리밍 핸들러 (진행률 추적 포함) ───────────────────────
-
-class ProgressWSStreamHandler(WSStreamHandler):
-    """문자 수 기반 진행률을 함께 전송하는 스트리밍 핸들러."""
-
-    def __init__(self, websocket: Any, ai_name: str):
-        super().__init__(websocket, ai_name)
-        self._char_count = 0
-
-    async def on_llm_new_token(self, token: str, **kwargs) -> None:
-        if token:
-            self._char_count += len(token)
-            await self.ws.send_json({"type": "log", "aiName": self.ai_name, "message": token})
-            # 약 2000자를 100%로 환산 (긴 응답도 부드럽게 표시)
-            pct = min(int(self._char_count / 20), 99)
-            await self.ws.send_json({"type": "progress", "aiName": self.ai_name, "percent": pct})
-
+# ProgressWSStreamHandler는 lc_providers에서 import (중복 정의 제거)
 
 # ── 공통 유틸 ─────────────────────────────────────────────────────────────────
 
@@ -325,7 +309,7 @@ async def synthesize_node(state: GraphState) -> dict:
         return {"final_synthesis": ""}
 
     synthesis_prompt = (
-        "팀원들의 작업이 완료되었습니다. 결과를 종합하여 사용자에게 최종 답변을 작성해주세요.\n\n"
+        "팀원들의 작업이 완료 되었습니다. 결과를 종합하여 사용자에게 최종 답변을 작성해주세요.\n\n"
         f"원래 요청: {state['user_prompt']}\n\n" + "\n\n".join(valid)
     )
 

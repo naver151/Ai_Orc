@@ -1,20 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import styles from './ChatPage.module.css'
 import AgentWorkspace from './AgentWorkspace'
-import { sendChatMessage, generateChatResponse, analyzeRequest, detectProjectIntent, pollCeleryResults } from '../utils/agentManager'
+import { sendChatMessage, generateChatResponse, analyzeRequest, detectProjectIntent } from '../utils/agentManager'
 
-
-const BACKEND = 'http://localhost:8000'
-
-async function saveOrchLog({ request, agents, workerResults, synthesisResult }) {
-  try {
-    await fetch(`${BACKEND}/orchestration-logs/ui`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ request, agents, worker_results: workerResults, synthesis_result: synthesisResult }),
-    })
-  } catch {}
-}
 
 // ── 채팅 저장소 헬퍼 ─────────────────────────────────────────
 function loadChatList(uid) {
@@ -115,8 +103,6 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
   const messagesEndRef  = useRef(null)
   const chatBtnRef      = useRef(null)
   const dragStateRef    = useRef({ dragging: false })
-  const celeryStopRef   = useRef(null)   // Celery 폴링 정리 함수
-
   const uid = user?.uid ?? 'guest'
 
   // ── 채팅 목록 ─────────────────────────────────────────────
@@ -363,27 +349,9 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
     const req = pendingRequest
     setMode('working')
     setPending('')
-    const { agents, projectId, celeryWarning } = await analyzeRequest(req)
+    const { agents } = await analyzeRequest(req)
     setWorkspace({ id: Date.now(), agents, request: req, instant: workspace !== null })
     setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
-
-    if (celeryWarning) {
-      addMsg({ role: 'ai', text: '⚠️ 백그라운드 큐(Redis/Celery)에 연결할 수 없어 DB 이력은 저장되지 않습니다. 에이전트 실시간 협업은 정상 동작합니다.' })
-    }
-
-    // Celery 결과 폴링 시작 (project_id 있을 때만)
-    if (projectId) {
-      celeryStopRef.current?.()   // 이전 폴링이 남아 있으면 정리
-      celeryStopRef.current = pollCeleryResults(projectId, {
-        onAllDone: () => {
-          addMsg({ role: 'ai', text: '백그라운드 처리가 완료되어 DB에 저장됐습니다.' })
-          celeryStopRef.current = null
-        },
-        onError: (_name, err) => {
-          console.warn('[Celery 폴링 오류]', err)
-        },
-      })
-    }
   }
 
   // ── 프로젝트 취소 ─────────────────────────────────────────
@@ -396,8 +364,6 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
 
   // ── 워크스페이스 닫기 (채팅으로 복귀) ────────────────────
   const handleCloseWorkspace = () => {
-    celeryStopRef.current?.()   // Celery 폴링 정리
-    celeryStopRef.current = null
     setWorkspace(null)
     setMode('chat')
     setChatModalOpen(false)
@@ -582,9 +548,6 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
                   agents={workspace.agents}
                   request={workspace.request}
                   instant={workspace.instant ?? false}
-                  onDone={({ request, agents, workerResults, synthesisResult }) =>
-                    saveOrchLog({ request, agents, workerResults, synthesisResult })
-                  }
                 />
               </div>
             </div>

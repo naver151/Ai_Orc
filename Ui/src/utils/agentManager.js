@@ -145,54 +145,6 @@ export function generateChatResponse(text) {
   return '네! 구체적인 작업이 있으시면 말씀해 주세요. 에이전트들이 협력해서 처리해 드릴게요.'
 }
 
-// ── Celery 큐에 에이전트 계획 등록 ───────────────────────────────
-// 반환: { projectId, celeryFailed } — celeryFailed=true 시 Redis 미실행
-export async function submitToCelery(request, agents) {
-  try {
-    const res = await fetch(`${BACKEND}/orchestrator/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ request, agents }),
-    })
-    if (!res.ok) return { projectId: null, celeryFailed: true }
-    const data = await res.json()
-    const celeryFailed = Array.isArray(data.tasks) && data.tasks.some(t => !t.celery_ok)
-    return { projectId: data.project_id ?? null, celeryFailed }
-  } catch {
-    return { projectId: null, celeryFailed: true }
-  }
-}
-
-// ── Celery 결과 폴링 (SSE) ────────────────────────────────────────
-// onAgentDone(taskId, agentName, result) — 에이전트 하나 완료 시 호출
-// onAllDone()                            — 전체 완료 시 호출
-export function pollCeleryResults(projectId, { onAgentDone, onAllDone, onError } = {}) {
-  const es = new EventSource(`${BACKEND}/orchestrator/poll/${projectId}`)
-
-  es.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data)
-      if (data.type === 'agent_done') {
-        onAgentDone?.(data.task_id, data.agent_name, data.result)
-      } else if (data.type === 'agent_error') {
-        onError?.(data.agent_name, data.error)
-      } else if (data.type === 'all_done' || data.type === 'timeout') {
-        onAllDone?.()
-        es.close()
-      }
-    } catch {}
-  }
-
-  es.onerror = () => {
-    onError?.('', 'SSE 연결 오류')
-    es.close()
-  }
-
-  // 120초 후 자동 종료 (서버 timeout과 동기화)
-  const timer = setTimeout(() => es.close(), 122_000)
-  return () => { clearTimeout(timer); es.close() }
-}
-
 // ── 관리자 AI에게 업무 분배 계획 요청 ───────────────────────
 export async function analyzeRequest(userText) {
   try {
@@ -211,14 +163,9 @@ export async function analyzeRequest(userText) {
       handoffMsg: i < arr.length - 1 ? (HANDOFF_MSGS[a.roleKey] ?? '다음 에이전트로 전달') : null,
     }))
 
-    // Celery에 병렬 등록 (UI 스트리밍과 독립적으로 실행 — DB 저장·이력 관리 목적)
-    const { projectId, celeryFailed } = await submitToCelery(userText, agents).catch(() => ({ projectId: null, celeryFailed: true }))
-
     return {
       intro: `${agents.length}개의 에이전트를 배치해 작업을 시작합니다.`,
       agents,
-      projectId,
-      celeryWarning: celeryFailed,
       summary: '에이전트 협업이 완료됐습니다. 추가로 필요한 사항이 있으시면 말씀해 주세요.',
     }
   } catch {
@@ -236,9 +183,32 @@ export async function analyzeRequest(userText) {
         color:      AI_LABELS[AI_ROLE_MAP[a.roleKey] ?? 'claude'].color,
         handoffMsg: i < arr.length - 1 ? (HANDOFF_MSGS[a.roleKey] ?? '다음 에이전트로 전달') : null,
       })),
-      projectId: null,
-      celeryWarning: true,
       summary: '에이전트 협업이 완료됐습니다.',
     }
   }
+}
+
+// ── 채팅 기록 조회 (DB) ──────────────────────────────────────
+export async function fetchChatHistory(uid, limit = 50) {
+  if (!uid) return []
+  try {
+    const res = await fetch(
+      `${BACKEND}/chat/history?user_uid=${encodeURIComponent(uid)}&limit=${limit}`
+    )
+    if (!res.ok) return []
+    return await res.json()
+  } catch {
+    return []
+  }
+}
+
+// ── WebSocket 에이전트 등록 ──────────────────────────────────
+// ws        : 이미 열려 있는 WebSocket 인스턴스
+// aiName    : 에이전트 이름 (고유)
+// provider  : 'github' | 'claude' | 'gemini' | 'gpt'
+// isManager : 관리자 여부
+// role      : 역할 설명 문자열
+export function spawnAgent(ws, { aiName, provider = 'github', isManager = false, role = '' } = {}) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return
+  ws.send(JSON.stringify({ action: 'spawn', aiName, provider, isManager, role }))
 }
