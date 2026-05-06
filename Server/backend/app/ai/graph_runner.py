@@ -29,6 +29,7 @@ from langgraph.types import Send
 from app.ai.graph_state import GraphState, SubTask
 from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke
 from app.ai.lc_memory import save_agent_memory, build_rag_context
+from app.ai.non_llm_runners import NON_LLM_RUNNERS, NON_LLM_LABELS
 
 _ORCHESTRATE_RE = re.compile(r"<ORCHESTRATE>(.*?)</ORCHESTRATE>", re.DOTALL)
 
@@ -238,22 +239,40 @@ async def worker_node(state: GraphState) -> dict:
     if peer_context:
         enriched += peer_context
 
-    # 스트리밍 핸들러 + RunnableConfig
-    handler = ProgressWSStreamHandler(ws, worker_name)
-    cfg = RunnableConfig(callbacks=[handler])
-    model = get_lc_model(provider_key, streaming=True)
-
     await ws.send_json({"type": "current_task", "aiName": worker_name, "task": task_text})
 
     result = ""
-    try:
-        resp = await safe_ainvoke(model, _build_messages("", enriched), config=cfg)
-        result = resp.content
-    except asyncio.CancelledError:
-        result = ""
-    except Exception as e:
-        result = f"[오류] {e}"
-        await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
+
+    # ── Non-LLM 분기 ──────────────────────────────────────────────────────────
+    if provider_key in NON_LLM_RUNNERS:
+        label = NON_LLM_LABELS.get(provider_key, provider_key.upper())
+        await ws.send_json({"type": "status",   "aiName": worker_name, "status": "RUNNING"})
+        await ws.send_json({"type": "progress", "aiName": worker_name, "percent": 0})
+        await ws.send_json({"type": "log", "aiName": worker_name,
+                            "message": f"{label} 실행 중..."})
+        try:
+            result = await NON_LLM_RUNNERS[provider_key](task_text)
+        except Exception as e:
+            result = f"[{provider_key.upper()} 오류] {e}"
+
+        await ws.send_json({"type": "log",      "aiName": worker_name, "message": result})
+        await ws.send_json({"type": "status",   "aiName": worker_name, "status": "COMPLETED"})
+        await ws.send_json({"type": "progress", "aiName": worker_name, "percent": 100})
+
+    # ── LLM 분기 ──────────────────────────────────────────────────────────────
+    else:
+        handler = ProgressWSStreamHandler(ws, worker_name)
+        cfg = RunnableConfig(callbacks=[handler])
+        model = get_lc_model(provider_key, streaming=True)
+
+        try:
+            resp = await safe_ainvoke(model, _build_messages("", enriched), config=cfg)
+            result = resp.content
+        except asyncio.CancelledError:
+            result = ""
+        except Exception as e:
+            result = f"[오류] {e}"
+            await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
 
     # 메모리 저장
     if result:

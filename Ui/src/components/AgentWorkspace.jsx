@@ -189,7 +189,10 @@ function showResult(result, stream, work, styles, agents, lastAgentOutput) {
 }
 
 // ── provider 키 변환 ──────────────────────────────────────
+const NON_LLM_KEYS = new Set(['search', 'crawler', 'runner', 'ocr', 'whisper'])
+
 function toProviderKey(aiType) {
+  if (NON_LLM_KEYS.has(aiType)) return aiType   // Non-LLM 그대로 통과
   if (aiType === 'claude')  return 'claude'
   if (aiType === 'gemini')  return 'gemini'
   if (aiType === 'gpt')     return 'github'
@@ -732,18 +735,18 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
               score >= 8      ? 'var(--teal)' :
               score >= 5      ? '#f5a623' : '#ff5555'
 
-            // ── 에이전트 패널 패 좌측에 점수 배지 추가 ──
+            // ── 에이전트 패널 점수 배지 (aInfo 안에 삽입) ──
             const panel = nameToPanel[aiName]
             if (panel && score != null) {
               const badge = document.createElement('div')
               badge.className = styles.scoreBadge
-              badge.style.background = `${scoreColor}22`
+              badge.style.background  = `${scoreColor}22`
               badge.style.color       = scoreColor
               badge.style.borderColor = `${scoreColor}55`
               badge.textContent = `${score}/10`
-              // aInfo 다음에 삽입
+              // aInfo 내부에 추가 (flex 형제로 삽입하지 않음 → aInfo 너비 보존)
               const aInfo = panel.querySelector(`.${styles.aInfo}`)
-              if (aInfo) aInfo.insertAdjacentElement('afterend', badge)
+              if (aInfo) aInfo.appendChild(badge)
             }
 
             // ── 스트림에 피드백 박스 ──

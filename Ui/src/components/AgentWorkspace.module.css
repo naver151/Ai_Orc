@@ -234,8 +234,11 @@
   color: var(--text3);
   margin-top: 4px;
   line-height: 1.45;
-  white-space: normal;
   word-break: break-word;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .aSpinner {
@@ -384,18 +387,18 @@
   vertical-align: middle;
 }
 
-/* 에이전트 패널 점수 배지 (왼쪽 목록) */
+/* 에이전트 패널 점수 배지 (aInfo 내부) */
 .scoreBadge {
+  display: inline-flex;
+  align-items: center;
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
-  padding: 2px 7px;
+  padding: 1px 6px;
   border-radius: 20px;
   border: 1px solid;
   letter-spacing: 0.04em;
-  flex-shrink: 0;
-  align-self: center;
-  margin-left: auto;
+  margin-top: 4px;
 }
 
 /* ── 스트림 영역 (오른쪽) ────────────────────────── */

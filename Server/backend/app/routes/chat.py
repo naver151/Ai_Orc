@@ -163,8 +163,21 @@ async def manager_plan(req: PlanRequest, db: Session = Depends(get_db)):
         "사용자 요청을 분석하여 에이전트 작업 계획을 순수 JSON으로만 반환하세요 (마크다운 금지).\n\n"
         "형식:\n"
         '{"agents": [{"name": "에이전트 이름", "roleKey": "역할키", "task": "구체적 작업 설명"}, ...]}\n\n'
-        "roleKey 선택: analyst, collector, executor, reviewer, writer\n"
+        "roleKey 선택:\n"
+        "  [LLM]\n"
+        "  analyst  — 분석·계획 수립\n"
+        "  collector — 정보 정리·구조화\n"
+        "  executor  — 실행·코드 생성\n"
+        "  reviewer  — 검토·품질 확인\n"
+        "  writer    — 최종 문서 작성\n"
+        "  [Non-LLM 도구 — 실제 실행]\n"
+        "  search    — 웹 검색 (실시간 정보 필요 시)\n"
+        "  crawler   — 웹 크롤링 (특정 URL 내용 수집 시)\n"
+        "  runner    — Python 코드 실행 (계산·데이터처리 결과 검증 시)\n"
+        "  ocr       — 이미지/PDF 텍스트 추출 시\n"
+        "  whisper   — 음성·영상 파일 전사 시\n\n"
         "에이전트 수: 2~4개, 작업 흐름 순서대로 배치.\n"
+        "실시간 데이터나 파일 처리가 필요하면 Non-LLM 도구를 적극 활용하세요.\n"
         "task는 해당 에이전트가 실제로 수행할 내용을 구체적으로 기술."
     )
 
