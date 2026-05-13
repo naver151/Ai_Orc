@@ -13,6 +13,7 @@ from app.routes.upload import router as upload_router
 from app.routes.orch_logs import router as orch_logs_router
 from app.routes.chat import router as chat_router
 from app.routes.orchestrate_stream import router as orchestrate_stream_router
+from app.routes.performance import router as performance_router
 from app.connection_manager import connection_manager
 from app.ai.agent_runner import agent_manager
 
@@ -39,6 +40,7 @@ app.include_router(upload_router)
 app.include_router(orch_logs_router)
 app.include_router(chat_router)
 app.include_router(orchestrate_stream_router)
+app.include_router(performance_router)
 
 
 # ── 헬스 체크 ─────────────────────────────────────────────────
@@ -146,6 +148,24 @@ async def websocket_endpoint(websocket: WebSocket):
                         "aiName": ai_name,
                         "status": "RUNNING",
                     })
+
+            # ── user_review: 사용자 교차검증 응답 ────────────
+            elif action == "user_review":
+                feedback  = data.get("feedback", "").strip()
+                approved  = data.get("approved", True)
+                # ai_name 자리에 managerName이 오거나 aiName이 올 수 있음
+                manager_name = data.get("managerName", ai_name)
+                agent_manager.set_user_review(manager_name, feedback, approved)
+
+            # ── set_distribution: 분배 모드 변경 ────────────
+            elif action == "set_distribution":
+                mode = data.get("mode", "auto")   # "auto" | "manual"
+                agent_manager.set_distribution_mode(ai_name, mode)
+                await websocket.send_json({
+                    "type":   "distribution_mode_set",
+                    "aiName": ai_name,
+                    "mode":   mode,
+                })
 
             # ── kill: 에이전트 종료 ───────────────────────────
             elif action == "kill":

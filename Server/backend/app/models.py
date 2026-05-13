@@ -55,6 +55,21 @@ class TaskExecution(Base):
     error = Column(Text, nullable=True)
 
 
+class AgentPerformance(Base):
+    """
+    적응형 분배 — AI 성능 이력.
+    review_node에서 채점된 점수를 저장하여
+    다음 plan_node에서 최고 성능 provider를 epsilon-greedy로 자동 선택.
+    """
+    __tablename__ = "agent_performance"
+
+    id         = Column(Integer, primary_key=True)
+    task_type  = Column(String,  nullable=False, index=True)  # "code" | "analysis" | "writing" | "search" | "general"
+    provider   = Column(String,  nullable=False, index=True)  # "claude" | "github" | "gemini" | ...
+    score      = Column(Integer, nullable=False)              # AI 리뷰 점수 1~10
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class OrchestrationLog(Base):
     """
     오케스트레이션 실행 기록 — 파인튜닝 데이터셋 구축용.

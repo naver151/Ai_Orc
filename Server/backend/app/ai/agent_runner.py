@@ -88,10 +88,18 @@ class _Runner:
             "final_synthesis":     "",
             "review_verdict":      "",
             "review_feedback":     "",
+            "review_scores":       {},
             "retry_count":         0,
             "max_retries":         2,
+            # 사용자 교차검증
+            "user_feedback":       "",
+            "user_approved":       True,
+            "review_timed_out":    False,
+            "retry_worker_names":  [],
+            # 적응형 분배 모드
+            "distribution_mode":   agent_manager.get_distribution_mode(manager_name),
             "websocket":           websocket,
-            "agent_manager_ref":   agent_manager,   # pause/kill 체크용
+            "agent_manager_ref":   agent_manager,
         }
 
         final = await orchestration_graph.ainvoke(initial)

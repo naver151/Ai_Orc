@@ -18,7 +18,8 @@ def _merge_dict(a: dict, b: dict) -> dict:
 
 class SubTask(TypedDict):
     worker_name: str
-    task: str
+    task:        str
+    task_type:   str   # "code" | "analysis" | "writing" | "search" | "general"
 
 
 class GraphState(TypedDict):
@@ -45,12 +46,22 @@ class GraphState(TypedDict):
     # ── 종합 단계 ──────────────────────────────────────────────
     final_synthesis: str
 
-    # ── 리뷰 단계 (Phase 4) ────────────────────────────────────
-    review_verdict:  str   # "pass" | "fail"
-    review_feedback: str
-    retry_count:     int
-    max_retries:     int
+    # ── AI 리뷰 단계 ───────────────────────────────────────────
+    review_verdict:   str            # "pass" | "fail"
+    review_feedback:  str            # 전체 피드백 텍스트
+    review_scores:    dict[str, int | None]  # {worker_name: 1~10 | None}
+    retry_count:      int
+    max_retries:      int
+
+    # ── 사용자 교차검증 단계 ────────────────────────────────────
+    user_feedback:       str         # 사용자 입력 피드백
+    user_approved:       bool        # True: 승인, False: 재작업 요청
+    review_timed_out:    bool        # True: 15초 타임아웃으로 자동 진행
+    retry_worker_names:  list[str]   # 재실행할 워커 이름 목록
+
+    # ── 적응형 분배 ─────────────────────────────────────────────
+    distribution_mode: str  # "auto" (DB 기반) | "manual" (LLM 판단)
 
     # ── 런타임 전용 (직렬화 안 함 — 체크포인터 미사용) ────────
-    websocket:        Any  # FastAPI WebSocket
-    agent_manager_ref: Any # AgentManager 참조 (pause/kill 체크용)
+    websocket:         Any  # FastAPI WebSocket
+    agent_manager_ref: Any  # AgentManager 참조 (pause/kill + user_review 이벤트)

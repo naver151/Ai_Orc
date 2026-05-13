@@ -21,6 +21,7 @@ class AgentState:
         self.is_killed        = False
         self.is_manager_flag  = False   # spawn 시 명시적으로 설정
         self.role             = ""
+        self.distribution_mode = "auto"  # "auto" | "manual"
         self._pause_event     = asyncio.Event()
         self._pause_event.set()  # 기본: 실행 가능 상태
 
@@ -53,6 +54,9 @@ class AgentManager:
 
     def __init__(self):
         self._agents: dict[str, AgentState] = {}
+        # 사용자 교차검증 이벤트 저장소
+        # {manager_name: {"event": asyncio.Event, "feedback": str, "approved": bool}}
+        self._user_reviews: dict[str, dict] = {}
 
     def get_or_create(self, ai_name: str, provider_key: str = "github") -> AgentState:
         if ai_name not in self._agents:
@@ -84,6 +88,47 @@ class AgentManager:
 
     def get_provider_map(self) -> dict[str, str]:
         return {name: s.provider_key for name, s in self._agents.items()}
+
+    # ── 사용자 교차검증 이벤트 ────────────────────────────────
+    def request_user_review(self, manager_name: str) -> asyncio.Event:
+        """user_review_node 진입 시 호출. 이벤트 객체 반환."""
+        event = asyncio.Event()
+        self._user_reviews[manager_name] = {
+            "event":    event,
+            "feedback": "",
+            "approved": True,
+        }
+        return event
+
+    def set_user_review(self, manager_name: str, feedback: str, approved: bool) -> None:
+        """WS 'user_review' 액션 수신 시 호출. 이벤트 신호."""
+        entry = self._user_reviews.get(manager_name)
+        if entry:
+            entry["feedback"] = feedback
+            entry["approved"] = approved
+            entry["event"].set()
+
+    def get_user_review_result(self, manager_name: str) -> dict:
+        """이벤트 완료 후 결과 조회."""
+        entry = self._user_reviews.get(manager_name, {})
+        return {
+            "feedback": entry.get("feedback", ""),
+            "approved": entry.get("approved", True),
+        }
+
+    def clear_user_review(self, manager_name: str) -> None:
+        self._user_reviews.pop(manager_name, None)
+
+    # ── 적응형 분배 모드 ──────────────────────────────────────────
+    def set_distribution_mode(self, ai_name: str, mode: str) -> None:
+        """'auto' | 'manual' 설정."""
+        state = self.get(ai_name)
+        if state:
+            state.distribution_mode = mode
+
+    def get_distribution_mode(self, ai_name: str) -> str:
+        state = self.get(ai_name)
+        return state.distribution_mode if state else "auto"
 
 
 # 싱글턴 — agent_runner, graph_runner 양쪽에서 공유

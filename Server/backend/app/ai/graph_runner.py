@@ -16,8 +16,10 @@ LangGraph 멀티에이전트 오케스트레이션 그래프 (Phase 2)
 
 from __future__ import annotations
 import json
+import os
 import re
 import asyncio
+import random
 
 _SCORE_RE = re.compile(r"⭐\s*점수\s*:\s*(\d+)\s*/\s*10", re.IGNORECASE)
 
@@ -32,6 +34,135 @@ from app.ai.lc_memory import save_agent_memory, build_rag_context
 from app.ai.non_llm_runners import NON_LLM_RUNNERS, NON_LLM_LABELS
 
 _ORCHESTRATE_RE = re.compile(r"<ORCHESTRATE>(.*?)</ORCHESTRATE>", re.DOTALL)
+
+# ── 적응형 분배 상수 / 유틸 ──────────────────────────────────────────────────
+
+_PERF_N   = 10    # 최근 N건 평균
+_MIN_DATA  = 5    # 최소 데이터 건수 (미달 시 LLM 판단 폴백)
+_EPSILON   = 0.10 # 10% 탐색
+
+
+def _classify_task_type(task_text: str) -> str:
+    """서브태스크 텍스트를 카테고리 키워드로 분류."""
+    t = task_text.lower()
+    if any(k in t for k in ['코드', '구현', '개발', '프로그래밍', 'code', 'implement', 'programming']):
+        return 'code'
+    if any(k in t for k in ['분석', '리서치', '조사', 'analysis', 'research', '검토', '비교']):
+        return 'analysis'
+    if any(k in t for k in ['작성', '문서', '보고서', '정리', 'writing', 'document', 'report']):
+        return 'writing'
+    if any(k in t for k in ['검색', 'search', 'crawl', '크롤', '수집', '데이터 수집']):
+        return 'search'
+    return 'general'
+
+
+def _get_provider_avg_scores(
+    task_type: str,
+    providers: list[str],
+    db=None,
+) -> dict[str, float | None]:
+    """
+    DB에서 provider별 최근 N건 평균 점수 조회.
+    _MIN_DATA 미만이면 None 반환 (데이터 부족 신호).
+
+    Args:
+        db: 외부에서 주입할 세션 (테스트용). None이면 내부적으로 SessionLocal 생성.
+    """
+    from app.models import AgentPerformance
+
+    _own_session = db is None
+    if _own_session:
+        from app.db import SessionLocal
+        db = SessionLocal()
+
+    result: dict[str, float | None] = {}
+    try:
+        for provider in providers:
+            rows = (
+                db.query(AgentPerformance.score)
+                .filter(
+                    AgentPerformance.task_type == task_type,
+                    AgentPerformance.provider  == provider,
+                )
+                .order_by(AgentPerformance.created_at.desc())
+                .limit(_PERF_N)
+                .all()
+            )
+            if len(rows) >= _MIN_DATA:
+                result[provider] = sum(r.score for r in rows) / len(rows)
+            else:
+                result[provider] = None
+    except Exception:
+        pass
+    finally:
+        if _own_session:
+            try:
+                db.close()
+            except Exception:
+                pass
+    return result
+
+
+def _epsilon_greedy_provider(task_type: str, available_providers: list[str]) -> str | None:
+    """
+    epsilon-greedy로 provider 선택.
+    - 10%: 랜덤 탐색
+    - 90%: 최고 평균 점수 provider
+    데이터 부족 시 None 반환 → LLM 판단 폴백.
+    """
+    scores = _get_provider_avg_scores(task_type, available_providers)
+    scored = {p: s for p, s in scores.items() if s is not None}
+
+    if not scored:
+        return None  # 모두 데이터 부족 → 폴백
+
+    if random.random() < _EPSILON:
+        return random.choice(available_providers)  # 탐색
+
+    return max(scored, key=lambda p: scored[p])  # 활용
+
+
+def _save_performance_sync(task_type: str, provider: str, score: int) -> None:
+    """성능 점수 동기 저장 (asyncio.to_thread에서 호출)."""
+    from app.db import SessionLocal
+    from app.models import AgentPerformance
+
+    try:
+        db = SessionLocal()
+        db.add(AgentPerformance(task_type=task_type, provider=provider, score=score))
+        db.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+# ── 교차 리뷰 모델 매핑 ───────────────────────────────────────────────────────
+# 워커가 쓴 모델과 다른 모델로 리뷰 → 서로 다른 시각 확보
+_CROSS_REVIEW_MAP: dict[str, str] = {
+    "github":  "claude",
+    "gpt":     "claude",
+    "claude":  "github",
+    "gemini":  "claude",
+    # Non-LLM 결과도 LLM이 검토
+    "search":  "claude",
+    "crawler": "claude",
+    "runner":  "github",
+    "ocr":     "github",
+    "whisper": "github",
+}
+
+def _get_reviewer_key(worker_provider: str) -> str:
+    """워커 provider와 다른 리뷰어 모델 키 반환. API 키 없으면 github 폴백."""
+    reviewer = _CROSS_REVIEW_MAP.get(worker_provider, "github")
+    if reviewer == "claude" and not os.getenv("ANTHROPIC_API_KEY"):
+        reviewer = "github"
+    if reviewer == "gemini" and not (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")):
+        reviewer = "github"
+    return reviewer
 
 
 # ── 관리자 시스템 프롬프트 ────────────────────────────────────────────────────
@@ -183,11 +314,39 @@ async def plan_node(state: GraphState) -> dict:
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"is_direct": True, "direct_answer": "", "plan_summary": "", "subtasks": []}
 
-    # worker_index → 이름 (라운드로빈 폴백)
+    # ── 서브태스크 배정: 자동(adaptive) vs 수동(LLM 판단) ────────
+    distribution_mode = state.get("distribution_mode", "manual")
+    provider_map      = state["provider_map"]
+
+    # provider → 워커 이름 목록 역매핑
+    provider_to_workers: dict[str, list[str]] = {}
+    for w in workers:
+        p = provider_map.get(w, "github")
+        provider_to_workers.setdefault(p, []).append(w)
+    available_providers = list(provider_to_workers.keys())
+
     subtasks: list[SubTask] = []
     for st in subtasks_raw:
-        idx = (st.get("worker_index", 1) - 1) % len(workers)
-        subtasks.append({"worker_name": workers[idx], "task": st.get("task", "")})
+        task_text = st.get("task", "")
+        task_type = _classify_task_type(task_text)
+
+        chosen_worker: str | None = None
+
+        if distribution_mode == "auto":
+            best_provider = _epsilon_greedy_provider(task_type, available_providers)
+            if best_provider:
+                chosen_worker = provider_to_workers[best_provider][0]
+
+        if not chosen_worker:
+            # 데이터 부족 또는 manual 모드 → LLM worker_index 사용
+            idx = (st.get("worker_index", 1) - 1) % len(workers)
+            chosen_worker = workers[idx]
+
+        subtasks.append({
+            "worker_name": chosen_worker,
+            "task":        task_text,
+            "task_type":   task_type,
+        })
 
     # 계획 요약 + 배분 이벤트
     await ws.send_json({"type": "log", "aiName": manager,
@@ -374,27 +533,32 @@ _REVIEWER_SYSTEM = (
 
 async def review_node(state: GraphState) -> dict:
     """
-    워커 결과물을 개별 검토하고 피드백 생성.
-    각 워커마다 review_feedback 메시지를 WebSocket으로 스트리밍.
+    교차 리뷰: 워커가 쓴 모델과 다른 모델로 각 결과물 검토.
+    review_scores 딕셔너리에 점수를 누적하여 user_review_node로 전달.
     """
-    ws           = state["websocket"]
-    manager      = state["manager_name"]
-    provider_key = state["provider_map"].get(manager, "github")
-    results      = state.get("worker_results", {})
+    ws      = state["websocket"]
+    manager = state["manager_name"]
+    results = state.get("worker_results", {})
 
     if not results:
-        return {"review_feedback": ""}
+        return {"review_feedback": "", "review_scores": {}}
 
     await ws.send_json({"type": "review_start", "aiName": manager})
 
     all_feedback: list[str] = []
+    review_scores: dict[str, int | None] = {}
 
     for worker_name, result in results.items():
         if not result or not result.strip():
+            review_scores[worker_name] = None
             continue
 
         if await _check_control(state, manager):
             break
+
+        # ── 교차 리뷰: 워커와 다른 모델 선택 ──────────────────
+        worker_provider  = state["provider_map"].get(worker_name, "github")
+        reviewer_key     = _get_reviewer_key(worker_provider)
 
         prompt = (
             f"원래 요청: {state['user_prompt']}\n\n"
@@ -402,15 +566,14 @@ async def review_node(state: GraphState) -> dict:
             "위 결과물을 검토하고 형식에 맞춰 피드백해주세요."
         )
 
-        # 리뷰는 스트리밍으로 전송 (worker 이름을 aiName으로)
         handler = ProgressWSStreamHandler(ws, worker_name)
         cfg     = RunnableConfig(callbacks=[handler])
-        model   = get_lc_model(provider_key, streaming=True)
+        model   = get_lc_model(reviewer_key, streaming=True)
 
         await ws.send_json({
-            "type":    "review_begin",
-            "aiName":  worker_name,
-            "message": f"[검토 시작] {worker_name}",
+            "type":         "review_begin",
+            "aiName":       worker_name,
+            "reviewerModel": reviewer_key.upper(),
         })
 
         feedback = ""
@@ -425,34 +588,165 @@ async def review_node(state: GraphState) -> dict:
             feedback = f"[검토 오류] {e}"
             await ws.send_json({"type": "log", "aiName": worker_name, "message": feedback})
 
-        # 점수 파싱 (⭐ 점수: X/10)
         score_match = _SCORE_RE.search(feedback)
         score = int(score_match.group(1)) if score_match else None
+        review_scores[worker_name] = score
 
         await ws.send_json({
-            "type":     "review_done",
-            "aiName":   worker_name,
-            "feedback": feedback,
-            "score":    score,          # 1~10 정수, 파싱 실패 시 null
+            "type":          "review_done",
+            "aiName":        worker_name,
+            "feedback":      feedback,
+            "score":         score,
+            "reviewerModel": reviewer_key.upper(),
         })
 
-        all_feedback.append(f"[{worker_name} 검토]\n{feedback}")
+        all_feedback.append(f"[{worker_name} 검토 — {reviewer_key.upper()}]\n{feedback}")
 
-    return {"review_feedback": "\n\n".join(all_feedback)}
+    # ── 점수 DB 저장 (적응형 분배용) ──────────────────────────
+    subtask_map: dict[str, str] = {
+        st["worker_name"]: st.get("task_type", "general")
+        for st in state.get("subtasks", [])
+    }
+    for worker_name, score in review_scores.items():
+        if score is not None:
+            worker_provider = state["provider_map"].get(worker_name, "github")
+            task_type       = subtask_map.get(worker_name, "general")
+            try:
+                await asyncio.to_thread(
+                    _save_performance_sync, task_type, worker_provider, score
+                )
+            except Exception:
+                pass
+
+    return {
+        "review_feedback": "\n\n".join(all_feedback),
+        "review_scores":   review_scores,
+    }
+
+
+# ── 사용자 교차검증 노드 ──────────────────────────────────────────────────────
+
+_USER_REVIEW_TIMEOUT = 15   # 초
+
+async def user_review_node(state: GraphState) -> dict:
+    """
+    AI 리뷰 완료 후 사용자에게 15초 검증 기회 제공.
+    - 승인: 바로 synthesize
+    - 피드백 입력: 점수 낮은 워커 재실행
+    - 타임아웃: 자동 승인 후 synthesize
+    """
+    ws      = state["websocket"]
+    manager = state["manager_name"]
+    am      = state["agent_manager_ref"]
+    scores  = state.get("review_scores", {})
+
+    # 사용자 리뷰 요청 전송
+    await ws.send_json({
+        "type":    "user_review_request",
+        "aiName":  manager,
+        "scores":  scores,
+        "timeout": _USER_REVIEW_TIMEOUT,
+    })
+
+    # 이벤트 대기 (15초 타임아웃)
+    event = am.request_user_review(manager)
+    timed_out = False
+    try:
+        await asyncio.wait_for(event.wait(), timeout=float(_USER_REVIEW_TIMEOUT))
+    except asyncio.TimeoutError:
+        timed_out = True
+
+    result = am.get_user_review_result(manager)
+    am.clear_user_review(manager)
+
+    await ws.send_json({
+        "type":     "user_review_done",
+        "aiName":   manager,
+        "timedOut": timed_out,
+    })
+
+    # ── 재실행 워커 결정 ─────────────────────────────────────────
+    retry_workers: list[str] = []
+    if not timed_out and not result["approved"] and result["feedback"].strip():
+        # 피드백이 있고 승인 안 된 경우 → 점수 낮은 워커만 재실행
+        for worker, score in scores.items():
+            if score is None or score < 7:
+                retry_workers.append(worker)
+        # 전부 점수 높으면(사용자만 불만) 전체 재실행
+        if not retry_workers:
+            retry_workers = list(scores.keys())
+
+    return {
+        "user_feedback":      result["feedback"],
+        "user_approved":      result["approved"],
+        "review_timed_out":   timed_out,
+        "retry_worker_names": retry_workers,
+    }
+
+
+# ── 재실행 워커 노드 ──────────────────────────────────────────────────────────
+
+async def retry_node(state: GraphState) -> dict:
+    """
+    사용자 피드백을 반영하여 특정 워커를 재실행.
+    worker_node와 동일하지만 user_feedback를 컨텍스트에 주입.
+    review_node를 거치지 않고 synthesize_node로 직행.
+    """
+    ws          = state["websocket"]
+    worker_name = state["current_worker_name"]
+    task_text   = state["current_task_text"]
+    provider_key = state["provider_map"].get(worker_name, "github")
+    user_fb     = state.get("user_feedback", "")
+
+    if await _check_control(state, worker_name):
+        return {"worker_results": {worker_name: ""}}
+
+    # 사용자 피드백을 태스크에 주입
+    enriched = _inject_memory(worker_name, task_text)
+    if user_fb:
+        enriched += f"\n\n[사용자 검토 의견 — 반드시 반영하세요]\n{user_fb}"
+
+    # 기존 결과도 컨텍스트로 제공
+    prev = state.get("worker_results", {}).get(worker_name, "")
+    if prev:
+        enriched += f"\n\n[이전 작성 내용 (수정 필요)]\n{prev[:800]}"
+
+    await ws.send_json({
+        "type":   "log",
+        "aiName": worker_name,
+        "message": f"\n🔄 사용자 피드백 반영 후 재작업 중...\n",
+    })
+    await ws.send_json({"type": "current_task", "aiName": worker_name, "task": task_text})
+
+    result = ""
+
+    if provider_key in NON_LLM_RUNNERS:
+        try:
+            result = await NON_LLM_RUNNERS[provider_key](enriched)
+        except Exception as e:
+            result = f"[{provider_key.upper()} 재실행 오류] {e}"
+        await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
+        await ws.send_json({"type": "status", "aiName": worker_name, "status": "COMPLETED"})
+    else:
+        handler = ProgressWSStreamHandler(ws, worker_name)
+        cfg = RunnableConfig(callbacks=[handler])
+        model = get_lc_model(provider_key, streaming=True)
+        try:
+            resp = await safe_ainvoke(model, _build_messages("", enriched), config=cfg)
+            result = resp.content
+        except Exception as e:
+            result = f"[재실행 오류] {e}"
+
+    await ws.send_json({"type": "current_task", "aiName": worker_name, "task": ""})
+    return {"worker_results": {worker_name: result}}
 
 
 # ── 라우팅 ────────────────────────────────────────────────────────────────────
 
 def route_after_plan(state: GraphState):
-    """
-    plan_node 이후 라우팅.
-    - 직접 답변: END
-    - 분배 필요: Send API로 worker_node를 병렬 실행
-      (Send는 반드시 add_conditional_edges 의 라우팅 함수에서만 반환 가능)
-    """
+    """plan_node 이후: 직접 답변 → END, 분배 → worker_node 병렬 실행."""
     if state.get("is_direct"):
         return END
-
     return [
         Send("worker_node", {
             **state,
@@ -463,21 +757,46 @@ def route_after_plan(state: GraphState):
     ]
 
 
+def route_after_user_review(state: GraphState):
+    """
+    user_review_node 이후 라우팅.
+    - 재실행 필요 워커 있음 → retry_node 병렬 실행
+    - 없음 → synthesize_node
+    """
+    retry_workers = state.get("retry_worker_names", [])
+    if not retry_workers:
+        return "synthesize_node"
+
+    subtask_map = {st["worker_name"]: st["task"] for st in state.get("subtasks", [])}
+    return [
+        Send("retry_node", {
+            **state,
+            "current_worker_name": name,
+            "current_task_text":   subtask_map.get(name, ""),
+        })
+        for name in retry_workers
+    ]
+
+
 # ── 그래프 빌드 ───────────────────────────────────────────────────────────────
 
 def build_graph():
     g = StateGraph(GraphState)
 
-    g.add_node("plan_node",       plan_node)
-    g.add_node("worker_node",     worker_node)
-    g.add_node("review_node",     review_node)     # 워커 결과 개별 검토
-    g.add_node("synthesize_node", synthesize_node)
+    g.add_node("plan_node",        plan_node)
+    g.add_node("worker_node",      worker_node)
+    g.add_node("review_node",      review_node)        # 교차 AI 리뷰
+    g.add_node("user_review_node", user_review_node)   # 사용자 교차검증 (15초)
+    g.add_node("retry_node",       retry_node)         # 피드백 반영 재실행
+    g.add_node("synthesize_node",  synthesize_node)
 
     g.add_edge(START, "plan_node")
-    g.add_conditional_edges("plan_node", route_after_plan)
-    g.add_edge("worker_node",     "review_node")   # 워커 → 리뷰
-    g.add_edge("review_node",     "synthesize_node")
-    g.add_edge("synthesize_node", END)
+    g.add_conditional_edges("plan_node",        route_after_plan)
+    g.add_edge("worker_node",      "review_node")
+    g.add_edge("review_node",      "user_review_node")
+    g.add_conditional_edges("user_review_node", route_after_user_review)
+    g.add_edge("retry_node",       "synthesize_node")
+    g.add_edge("synthesize_node",  END)
 
     return g.compile()
 

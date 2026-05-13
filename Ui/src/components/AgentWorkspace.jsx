@@ -233,9 +233,21 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
   const agentsRef  = useRef([])        // 현재 에이전트 목록 (개입 UI용)
 
   // ── 실시간 개입 UI 상태 ───────────────────────────────
-  const [ivOpen,   setIvOpen]   = useState(false)   // 개입 패널 표시 여부
-  const [ivTarget, setIvTarget] = useState('')       // 개입 대상 에이전트 이름
-  const [ivText,   setIvText]   = useState('')       // 입력 텍스트
+  const [ivOpen,   setIvOpen]   = useState(false)
+  const [ivTarget, setIvTarget] = useState('')
+  const [ivText,   setIvText]   = useState('')
+
+  // ── 적응형 분배 슬라이더 상태 ────────────────────────
+  const [distMode, setDistMode] = useState('auto')   // "auto" | "manual"
+
+  // ── 사용자 교차검증 UI 상태 ──────────────────────────
+  const [urOpen,        setUrOpen]        = useState(false)  // 검증 패널 표시
+  const [urScores,      setUrScores]      = useState({})     // {worker: score}
+  const [urManagerName, setUrManagerName] = useState('')     // 관리자 이름
+  const [urCountdown,   setUrCountdown]   = useState(15)     // 카운트다운
+  const [urFeedback,    setUrFeedback]    = useState('')     // 피드백 입력
+  const [urShowInput,   setUrShowInput]   = useState(false)  // 피드백 입력창
+  const urTimerRef = useRef(null)
 
   // 개입 전송
   const sendIntervention = () => {
@@ -261,12 +273,59 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
     setIvText('')
   }
 
-  // 컴포넌트 언마운트 시 WebSocket 정리
+  // ── 분배 모드 변경 ────────────────────────────────────
+  const handleDistModeChange = (mode) => {
+    setDistMode(mode)
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        action: 'set_distribution',
+        aiName: agentsRef.current[0]?.name ?? '',
+        mode,
+      }))
+    }
+  }
+
+  // ── 사용자 검증 전송 ─────────────────────────────────
+  const sendUserReview = (approved, feedback = '') => {
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    ws.send(JSON.stringify({
+      action:      'user_review',
+      aiName:      urManagerName,
+      managerName: urManagerName,
+      approved,
+      feedback,
+    }))
+    clearInterval(urTimerRef.current)
+    setUrOpen(false)
+    setUrFeedback('')
+    setUrShowInput(false)
+  }
+
+  // 카운트다운 타이머 시작
+  const startUrCountdown = (seconds) => {
+    setUrCountdown(seconds)
+    clearInterval(urTimerRef.current)
+    urTimerRef.current = setInterval(() => {
+      setUrCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(urTimerRef.current)
+          setUrOpen(false)   // 타임아웃 → 자동 닫힘 (백엔드도 자동 진행)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }
+
+  // 컴포넌트 언마운트 시 WebSocket + 타이머 정리
   useEffect(() => {
     return () => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close()
       }
+      clearInterval(urTimerRef.current)
     }
   }, [])
 
@@ -708,16 +767,17 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
 
           // 리뷰 단계 시작
           case 'review_start':
-            if (progText) progText.textContent = '검토 중...'
+            if (progText) progText.textContent = '교차 검토 중...'
             break
 
           // 개별 워커 리뷰 시작
           case 'review_begin': {
             const sb = nameToSb[aiName]
             if (sb) {
+              const reviewerModel = evt.reviewerModel ?? '리뷰어'
               const el = document.createElement('div')
               el.className = `${styles.logLine} ${styles.logShow} ${styles.reviewLabel}`
-              el.textContent = '── 리뷰어 검토 중 ──'
+              el.textContent = `── ${reviewerModel} 교차 검토 중 ──`
               sb.appendChild(el)
               stream.scrollTop = stream.scrollHeight
             }
@@ -765,6 +825,27 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
             }
             break
           }
+
+          // 사용자 교차검증 요청
+          case 'user_review_request': {
+            const scores  = evt.scores  ?? {}
+            const timeout = evt.timeout ?? 15
+            setUrScores(scores)
+            setUrManagerName(aiName)
+            setUrOpen(true)
+            setUrShowInput(false)
+            setUrFeedback('')
+            startUrCountdown(timeout)
+            if (progText) progText.textContent = '사용자 검증 대기 중...'
+            break
+          }
+
+          // 사용자 교차검증 완료
+          case 'user_review_done':
+            clearInterval(urTimerRef.current)
+            setUrOpen(false)
+            if (progText) progText.textContent = evt.timedOut ? '자동 승인 후 종합 중...' : '검증 완료, 종합 중...'
+            break
 
           // 종합 단계 시작
           case 'orchestration_synthesis':
@@ -831,7 +912,29 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
       <div ref={workRef} className={styles.workScene}>
 
         {/* 상단 헤더 */}
-        <div className={styles.workHeader} />
+        <div className={styles.workHeader}>
+          {/* 적응형 분배 슬라이더 */}
+          <div className={styles.distControl}>
+            <span className={styles.distLabel}>분배</span>
+            <button
+              className={`${styles.distBtn} ${distMode === 'auto' ? styles.distBtnActive : ''}`}
+              onClick={() => handleDistModeChange('auto')}
+              title="AI 성능 데이터 기반 자동 배정"
+            >
+              🤖 자동
+            </button>
+            <button
+              className={`${styles.distBtn} ${distMode === 'manual' ? styles.distBtnActive : ''}`}
+              onClick={() => handleDistModeChange('manual')}
+              title="관리자 AI가 직접 판단하여 배정"
+            >
+              ✏️ 수동
+            </button>
+            {distMode === 'auto' && (
+              <span className={styles.distHint}>성능 데이터 기반 ε-greedy</span>
+            )}
+          </div>
+        </div>
 
         {/* 본문 */}
         <div className={styles.workBody}>
@@ -854,6 +957,84 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
             </div>
 
             <div ref={streamRef} className={styles.streamBody} />
+
+            {/* ── 사용자 교차검증 패널 ── */}
+            {urOpen && (
+              <div className={styles.urPanel}>
+                <div className={styles.urHeader}>
+                  <span className={styles.urTitle}>🔍 사용자 검증</span>
+                  <span className={styles.urTimer}>{urCountdown}s</span>
+                  <div
+                    className={styles.urTimerBar}
+                    style={{ width: `${(urCountdown / 15) * 100}%` }}
+                  />
+                </div>
+
+                {/* 점수 요약 */}
+                <div className={styles.urScores}>
+                  {Object.entries(urScores).map(([name, score]) => {
+                    const color =
+                      score == null ? '#888' :
+                      score >= 8   ? 'var(--teal)' :
+                      score >= 5   ? '#f5a623' : '#ff5555'
+                    return (
+                      <div key={name} className={styles.urScoreItem}>
+                        <span className={styles.urScoreName}>{name}</span>
+                        <span className={styles.urScoreBadge} style={{ color, borderColor: color }}>
+                          {score != null ? `${score}/10` : 'N/A'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* 피드백 입력창 */}
+                {urShowInput && (
+                  <textarea
+                    className={styles.urFeedbackInput}
+                    value={urFeedback}
+                    onChange={e => setUrFeedback(e.target.value)}
+                    placeholder="어떤 부분이 부족한지 구체적으로 입력해주세요..."
+                    rows={3}
+                    autoFocus
+                  />
+                )}
+
+                {/* 액션 버튼 */}
+                <div className={styles.urActions}>
+                  <button
+                    className={`${styles.urBtn} ${styles.urBtnApprove}`}
+                    onClick={() => sendUserReview(true)}
+                  >
+                    ✅ 승인
+                  </button>
+
+                  {!urShowInput ? (
+                    <button
+                      className={`${styles.urBtn} ${styles.urBtnFeedback}`}
+                      onClick={() => { clearInterval(urTimerRef.current); setUrShowInput(true) }}
+                    >
+                      ✏️ 피드백
+                    </button>
+                  ) : (
+                    <button
+                      className={`${styles.urBtn} ${styles.urBtnFeedback}`}
+                      onClick={() => sendUserReview(false, urFeedback)}
+                      disabled={!urFeedback.trim()}
+                    >
+                      📨 전송
+                    </button>
+                  )}
+
+                  <button
+                    className={`${styles.urBtn} ${styles.urBtnSkip}`}
+                    onClick={() => sendUserReview(true)}
+                  >
+                    ⏭ 건너뜀
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* ── 실시간 개입 입력 바 ── */}
             {ivOpen && (

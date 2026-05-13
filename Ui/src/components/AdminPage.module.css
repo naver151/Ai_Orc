@@ -45,6 +45,58 @@
 }
 .exportBtn:hover { background: var(--accent); color: #fff; }
 
+/* ── 탭 네비게이션 ── */
+.tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 4px;
+}
+.tabBtn {
+  background: none;
+  border: none;
+  border-radius: 7px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  white-space: nowrap;
+}
+.tabBtn:hover { color: var(--text); background: var(--surface2); }
+.tabBtnActive { background: var(--accent) !important; color: #fff !important; }
+
+/* ── 탭 공통 바디 ── */
+.tabBody {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── 탭 로딩 / 빈 상태 ── */
+.tabLoading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+.tabEmpty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+}
+.tabEmptyIcon  { font-size: 48px; }
+.tabEmptyTitle { font-size: 16px; font-weight: 600; color: var(--text); }
+.tabEmptyDesc  { font-size: 13px; color: var(--text-muted); text-align: center; line-height: 1.8; }
+
 /* ── 본문 레이아웃 ── */
 .body {
   display: flex;
@@ -70,6 +122,17 @@
   letter-spacing: .06em;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.listCount {
+  margin-left: auto;
+  background: var(--surface2);
+  border-radius: 20px;
+  padding: 1px 8px;
+  font-size: 10px;
+  color: var(--text-muted);
 }
 .logItem {
   padding: 14px 16px;
@@ -183,6 +246,150 @@
   max-height: 300px;
   overflow-y: auto;
 }
+
+/* ── KPI 카드 ── */
+.kpiRow {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.kpiCard {
+  flex: 1;
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.kpiIcon  { font-size: 18px; }
+.kpiValue { font-size: 22px; font-weight: 800; line-height: 1.2; }
+.kpiLabel { font-size: 11px; color: var(--text-muted); font-weight: 600; letter-spacing: .04em; }
+.kpiSub   { font-size: 10px; color: var(--text-muted); }
+
+/* ── 통계 탭 바디 ── */
+.statsBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+/* ── 통계 그리드 ── */
+.statsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 900px) { .statsGrid { grid-template-columns: 1fr; } }
+
+/* ── 통계 카드 ── */
+.statsCard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.statsCardTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 14px;
+}
+
+/* ── 바 차트 ── */
+.barChart { display: flex; flex-direction: column; gap: 10px; }
+.barRow   { display: flex; align-items: center; gap: 10px; }
+.barLabel {
+  width: 80px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+  text-align: right;
+}
+.barTrack {
+  flex: 1;
+  height: 20px;
+  background: var(--surface2);
+  border-radius: 4px;
+  position: relative;
+  overflow: visible;
+  display: flex;
+  align-items: center;
+}
+.barFill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width .5s cubic-bezier(.4,0,.2,1);
+  min-width: 4px;
+}
+.barValue {
+  position: absolute;
+  right: -36px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.barSub { font-size: 10px; color: var(--text-muted); width: 60px; flex-shrink: 0; }
+.noData { font-size: 12px; color: var(--text-muted); padding: 20px 0; text-align: center; }
+
+/* ── SVG 선 그래프 ── */
+.lineChartWrap { display: flex; flex-direction: column; gap: 10px; }
+.lineSvg { width: 100%; height: auto; display: block; }
+.lineLegend { display: flex; flex-wrap: wrap; gap: 12px; }
+.legendItem { display: flex; align-items: center; gap: 5px; }
+.legendDot  { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.legendItem span { font-size: 11px; font-weight: 600; }
+.legendCount { font-size: 10px; color: var(--text-muted) !important; }
+
+/* ── 히트맵 ── */
+.heatmap { overflow-x: auto; }
+.heatmapTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.heatmapTh {
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.heatmapRowLabel {
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  border-right: 1px solid var(--border);
+}
+.heatmapCell {
+  padding: 8px 12px;
+  text-align: center;
+  border: 1px solid var(--border);
+  cursor: default;
+  transition: filter .15s;
+}
+.heatmapCell:hover { filter: brightness(1.3); }
+.heatmapNull { color: var(--text-muted); font-size: 11px; }
+
+/* ── 도넛 차트 ── */
+.donutWrap   { display: flex; gap: 20px; align-items: center; }
+.donutSvg    { width: 120px; height: 120px; flex-shrink: 0; }
+.donutLegend { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.donutItem   { display: flex; align-items: center; gap: 8px; }
+.donutDot    { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.donutLabel  { flex: 1; font-size: 12px; color: var(--text); }
+.donutCount  { font-size: 11px; color: var(--text-muted); }
+.donutPct    { font-size: 11px; font-weight: 700; color: var(--text-muted); min-width: 32px; text-align: right; }
 
 /* ── 평점 ── */
 .ratingRow {
