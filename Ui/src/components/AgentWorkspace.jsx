@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import styles from './AgentWorkspace.module.css'
+import FileTreePanel from './FileTreePanel'
+import FileViewer    from './FileViewer'
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
@@ -189,14 +191,10 @@ function showResult(result, stream, work, styles, agents, lastAgentOutput) {
 }
 
 // ── provider 키 변환 ──────────────────────────────────────
-const NON_LLM_KEYS = new Set(['search', 'crawler', 'runner', 'ocr', 'whisper'])
-
 function toProviderKey(aiType) {
-  if (NON_LLM_KEYS.has(aiType)) return aiType   // Non-LLM 그대로 통과
-  if (aiType === 'claude')  return 'claude'
-  if (aiType === 'gemini')  return 'gemini'
-  if (aiType === 'gpt')     return 'github'
-  return 'github'
+  if (aiType === 'claude') return 'claude'
+  if (aiType === 'gemini') return 'gemini'
+  return 'github'   // gpt 및 기본값
 }
 
 function _getUid() {
@@ -221,12 +219,13 @@ function makePanelHTML(a, s) {
 }
 
 // ── 메인 컴포넌트 ─────────────────────────────────────────
-export default function AgentWorkspace({ agents, request, onDone, instant = false }) {
+export default function AgentWorkspace({ agents, request, onDone, instant = false, projectId = null }) {
   const sceneRef   = useRef(null)
   const dotContRef = useRef(null)
   const workRef    = useRef(null)
   const listRef    = useRef(null)
   const streamRef  = useRef(null)
+  const tabBarRef  = useRef(null)      // 탭 바
   const resultRef  = useRef(null)
   const runningRef = useRef(false)
   const wsRef      = useRef(null)      // WebSocket (컨트롤 버튼·개입 입력에서 공유)
@@ -239,6 +238,11 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
 
   // ── 적응형 분배 슬라이더 상태 ────────────────────────
   const [distMode, setDistMode] = useState('auto')   // "auto" | "manual"
+
+  // ── 파일 워크스페이스 UI 상태 ───────────────────────
+  const [fileTreeVisible, setFileTreeVisible] = useState(false)
+  const [lastFilePath,    setLastFilePath]    = useState(null)   // 마지막 생성 파일 (하이라이트)
+  const [viewingFile,     setViewingFile]     = useState(null)   // FileViewer 표시 중인 파일
 
   // ── 사용자 교차검증 UI 상태 ──────────────────────────
   const [urOpen,        setUrOpen]        = useState(false)  // 검증 패널 표시
@@ -352,6 +356,7 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
     dotCont.innerHTML = ''
     list.innerHTML = ''
     stream.innerHTML = ''
+    if (tabBarRef.current) tabBarRef.current.innerHTML = ''
 
     result.style.opacity = '0'
     result.style.transition = ''
@@ -509,17 +514,20 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
     const progFill = work.querySelector(`.${styles.progFill}`)
     const progText = work.querySelector(`.${styles.progText}`)
     const liveTag  = work.querySelector(`.${styles.liveTag}`)
+    const tabBar   = tabBarRef.current
 
     // 에이전트 이름 → 패널/섹션바디 맵
     const nameToPanel = {}
     const nameToSb    = {}
     const nameToState = {}
+    const nameSections = {}  // agentName → section element
 
     agents.forEach((a, i) => {
       nameToPanel[a.name] = panelEls[i]
 
       const section = document.createElement('div')
       section.className = styles.section
+      section.dataset.agentName = a.name   // 탭 show/hide용
       section.innerHTML = `
         <div class="${styles.sectionLabel}">
           <div class="${styles.sectionDot}" style="background:${a.color}"></div>
@@ -531,12 +539,80 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
       `
       stream.appendChild(section)
       section.classList.add(styles.sectionShow)
+      nameSections[a.name] = section
 
       const sb = document.getElementById(`lgsb-${i}`)
       nameToSb[a.name]    = sb
       nameToState[a.name] = { lineBuffer: '', currentLineEl: null, fullText: '' }
     })
     stream.scrollTop = stream.scrollHeight
+
+    // ── 탭 바 생성 ────────────────────────────────────────
+    let activeTab = 'all'
+    const unreadMap = {}
+    agents.forEach(a => { unreadMap[a.name] = 0 })
+
+    if (tabBar) {
+      tabBar.innerHTML = ''
+
+      // 전체 탭
+      const allBtn = document.createElement('button')
+      allBtn.className = `${styles.tab} ${styles.tabActive}`
+      allBtn.dataset.tab = 'all'
+      allBtn.textContent = '전체'
+      tabBar.appendChild(allBtn)
+
+      // 에이전트별 탭
+      agents.forEach((a, i) => {
+        const btn = document.createElement('button')
+        btn.className = styles.tab
+        btn.dataset.tab = a.name
+        btn.innerHTML =
+          `<span class="${styles.tabDot}" style="background:${a.color}"></span>` +
+          `<span class="${styles.tabName}">${a.name}</span>` +
+          `<span class="${styles.tabBadge}" style="background:${a.color}18;color:${a.color}">${(a.aiType || 'AI').toUpperCase()}</span>`
+        tabBar.appendChild(btn)
+      })
+
+      // 탭 클릭 핸들러
+      tabBar.addEventListener('click', (e) => {
+        const btn = e.target.closest(`.${styles.tab}`)
+        if (!btn) return
+        const target = btn.dataset.tab
+        activeTab = target
+
+        // 활성 스타일
+        tabBar.querySelectorAll(`.${styles.tab}`).forEach(t =>
+          t.classList.toggle(styles.tabActive, t.dataset.tab === target)
+        )
+        // 섹션 show/hide
+        Object.entries(nameSections).forEach(([name, sec]) => {
+          sec.style.display = (target === 'all' || target === name) ? '' : 'none'
+        })
+        // 읽지 않은 뱃지 제거
+        if (target !== 'all') {
+          unreadMap[target] = 0
+          const badge = btn.querySelector(`.${styles.tabUnread}`)
+          if (badge) badge.remove()
+        }
+        stream.scrollTop = stream.scrollHeight
+      })
+    }
+
+    // 읽지 않은 메시지 카운트 업데이트
+    const updateUnread = (agentName) => {
+      if (!tabBar || activeTab === 'all' || activeTab === agentName) return
+      unreadMap[agentName] = (unreadMap[agentName] || 0) + 1
+      const btn = tabBar.querySelector(`[data-tab="${agentName}"]`)
+      if (!btn) return
+      let badge = btn.querySelector(`.${styles.tabUnread}`)
+      if (!badge) {
+        badge = document.createElement('span')
+        badge.className = styles.tabUnread
+        btn.appendChild(badge)
+      }
+      badge.textContent = unreadMap[agentName] > 99 ? '99+' : unreadMap[agentName]
+    }
 
     agents.forEach((_, i) => panelEls[i].classList.add(styles.running))
 
@@ -588,6 +664,7 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
       } else if (state.lineBuffer.trim()) {
         flush(state.lineBuffer, true)
       }
+      updateUnread(agentName)
     }
 
     // 에이전트 완료 처리
@@ -694,11 +771,12 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
       }
     })
 
-    // ── 관리자에게 프롬프트 전송 ──────────────────────────
+    // ── 관리자에게 프롬프트 전송 (projectId 포함 시 워크스페이스 모드) ──────
     ws.send(JSON.stringify({
-      action: 'prompt',
-      aiName: agents[0].name,
-      text:   taskRequest,
+      action:    'prompt',
+      aiName:    agents[0].name,
+      text:      taskRequest,
+      projectId: projectId ?? undefined,
     }))
 
     // ── 메시지 수신 루프 ──────────────────────────────────
@@ -852,6 +930,63 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
             if (progText) progText.textContent = '종합 중...'
             break
 
+          // ── 파일 워크스페이스 이벤트 ────────────────────
+          // 파일 생성/수정 — 파일트리 패널 업데이트
+          case 'file_written': {
+            const path = evt.path
+            if (path) {
+              setFileTreeVisible(true)
+              setLastFilePath(path)
+            }
+            // 스트림에 파일 생성 로그 표시
+            if (aiName && nameToSb[aiName]) {
+              const el = document.createElement('div')
+              el.className = `${styles.logLine} ${styles.logShow} ${styles.fileLog}`
+              el.innerHTML = `<span class="${styles.fileLogIcon}">📄</span><span>${evt.path}</span>`
+              nameToSb[aiName].appendChild(el)
+              stream.scrollTop = stream.scrollHeight
+            }
+            break
+          }
+
+          // 도구 호출 알림
+          case 'tool_call': {
+            if (aiName && nameToSb[aiName]) {
+              const el = document.createElement('div')
+              el.className = `${styles.logLine} ${styles.logShow} ${styles.toolLog}`
+              el.innerHTML = `<span class="${styles.toolLogIcon}">🔧</span><span class="${styles.toolLogText}">${evt.message || ''}</span>`
+              nameToSb[aiName].appendChild(el)
+              stream.scrollTop = stream.scrollHeight
+            }
+            break
+          }
+
+          // 코드 실행 중
+          case 'code_executing': {
+            if (aiName && nameToSb[aiName]) {
+              const el = document.createElement('div')
+              el.className = `${styles.logLine} ${styles.logShow} ${styles.codeLog}`
+              el.innerHTML = `<span class="${styles.codeLogIcon}">⚙️</span><span>코드 실행 중...</span>`
+              nameToSb[aiName].appendChild(el)
+              stream.scrollTop = stream.scrollHeight
+            }
+            break
+          }
+
+          // 코드 실행 완료
+          case 'code_executed': {
+            if (aiName && nameToSb[aiName]) {
+              const isOk = (evt.message ?? '').startsWith('✅')
+              const el = document.createElement('div')
+              el.className = `${styles.logLine} ${styles.logShow} ${styles.codeResultLog}`
+              el.style.borderLeftColor = isOk ? '#4caf82' : '#ff5555'
+              el.textContent = evt.message || ''
+              nameToSb[aiName].appendChild(el)
+              stream.scrollTop = stream.scrollHeight
+            }
+            break
+          }
+
           // 오케스트레이션 완료
           case 'orchestration_done':
             ws.close()
@@ -901,7 +1036,7 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
   }
 
   return (
-    <div ref={sceneRef} className={styles.scene}>
+    <div ref={sceneRef} className={`${styles.scene} ${fileTreeVisible ? styles.withFileTree : ''}`}>
 
       {/* 도트 애니메이션 씬 */}
       <div className={styles.dotScene}>
@@ -955,6 +1090,9 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
               </div>
               <div className={styles.progText} />
             </div>
+
+            {/* 에이전트 탭 바 */}
+            <div ref={tabBarRef} className={styles.tabBar} />
 
             <div ref={streamRef} className={styles.streamBody} />
 
@@ -1095,8 +1233,23 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
               <div className={styles.resultContent} />
             </div>
           </div>
+
+          {/* 파일 트리 패널 — workBody 안 세 번째 컬럼 (streamArea 오른쪽) */}
+          <FileTreePanel
+            projectId={projectId}
+            visible={fileTreeVisible}
+            onFileSelect={setViewingFile}
+            newFilePath={lastFilePath}
+          />
         </div>
       </div>
+
+      {/* 파일 뷰어 오버레이 */}
+      <FileViewer
+        projectId={projectId}
+        filePath={viewingFile}
+        onClose={() => setViewingFile(null)}
+      />
     </div>
   )
 }

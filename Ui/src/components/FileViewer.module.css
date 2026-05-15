@@ -1,0 +1,168 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: #00000088;
+  z-index: 1000;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  animation: fadeIn 0.15s ease;
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.panel {
+  width: min(680px, 95vw);
+  background: #0e0e1a;
+  border-left: 1px solid #2a2a3e;
+  display: flex;
+  flex-direction: column;
+  animation: slideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes slideIn {
+  from { transform: translateX(40px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* 헤더 */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #1e1e30;
+  background: #12121e;
+  flex-shrink: 0;
+}
+.fileIcon { font-size: 18px; }
+.fileMeta {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.filename {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+.filepath {
+  font-size: 11px;
+  color: #555;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.actionBtn {
+  padding: 4px 10px;
+  background: #1e1e30;
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  color: #aaa;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.actionBtn:hover { border-color: #555; color: #ccc; }
+
+.closeBtn {
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  color: #666;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.closeBtn:hover { border-color: #ff5555; color: #ff5555; }
+
+/* 본문 */
+.body {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+.body::-webkit-scrollbar       { width: 6px; height: 6px; }
+.body::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 3px; }
+
+.center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: #555;
+  gap: 10px;
+}
+.spinner {
+  font-size: 20px;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.errorText { color: #ff6b6b; }
+
+/* 코드 */
+.codeWrap {
+  display: flex;
+  min-height: 100%;
+}
+.lineNums {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding: 16px 12px 16px 16px;
+  background: #0b0b16;
+  color: #333;
+  font-size: 12px;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  line-height: 1.6;
+  user-select: none;
+  flex-shrink: 0;
+  min-width: 40px;
+}
+.lineNums span { display: block; }
+
+.code {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #c9d1d9;
+  white-space: pre;
+  overflow-x: auto;
+  background: transparent;
+}
+
+/* 푸터 */
+.footer {
+  display: flex;
+  gap: 16px;
+  padding: 8px 16px;
+  border-top: 1px solid #1e1e30;
+  background: #0b0b16;
+  font-size: 11px;
+  color: #555;
+  flex-shrink: 0;
+}
+.lang {
+  margin-left: auto;
+  color: #7c6dfa;
+}

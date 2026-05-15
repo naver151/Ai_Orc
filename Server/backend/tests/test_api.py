@@ -217,9 +217,10 @@ class TestAdaptiveDistribution:
         assert _classify_task_type("문서 정리해줘") == "writing"
 
     def test_classify_task_type_search(self):
+        """검색/크롤링은 Non-LLM 제거 후 general로 분류."""
         from app.ai.graph_runner import _classify_task_type
-        assert _classify_task_type("웹 검색해서 수집") == "search"
-        assert _classify_task_type("크롤링 해줘") == "search"
+        assert _classify_task_type("웹 검색해서 수집") == "general"
+        assert _classify_task_type("크롤링 해줘") == "general"
 
     def test_classify_task_type_general(self):
         from app.ai.graph_runner import _classify_task_type

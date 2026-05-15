@@ -1,0 +1,364 @@
+/* MilestoneBoard — 워크스페이스 우측 패널 */
+
+.panel {
+  width: 300px;
+  min-width: 260px;
+  max-width: 340px;
+  background: #0e0e1a;
+  border-left: 1px solid #1e1e30;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* ── 패널 헤더 ────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #1e1e30;
+  background: #0b0b16;
+  flex-shrink: 0;
+}
+.headerIcon  { font-size: 13px; }
+.headerTitle {
+  font-size: 11px;
+  font-weight: 700;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex: 1;
+}
+.spinner {
+  font-size: 12px;
+  color: #7c6dfa;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.totalProgress {
+  font-size: 10px;
+  color: #7c6dfa;
+  font-weight: 700;
+  background: #7c6dfa18;
+  border: 1px solid #7c6dfa33;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+.addMsBtn {
+  font-size: 10px;
+  padding: 2px 7px;
+  background: #1e1e2e;
+  border: 1px solid #2a2a3e;
+  border-radius: 5px;
+  color: #7c6dfa;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.addMsBtn:hover { background: #7c6dfa18; border-color: #7c6dfa55; }
+
+.closeBtn {
+  width: 22px;
+  height: 22px;
+  background: none;
+  border: 1px solid #2a2a3e;
+  border-radius: 5px;
+  color: #555;
+  cursor: pointer;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.closeBtn:hover { border-color: #ff5555; color: #ff5555; }
+
+/* 마일스톤 추가 입력 */
+.addMsRow {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  background: #0b0b16;
+  border-bottom: 1px solid #1e1e30;
+  flex-shrink: 0;
+}
+.addMsInput {
+  flex: 1;
+  padding: 5px 8px;
+  background: #12121e;
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  color: #ddd;
+  font-size: 12px;
+  outline: none;
+}
+.addMsInput:focus { border-color: #7c6dfa66; }
+.addMsInput::placeholder { color: #444; }
+.addMsConfirm {
+  padding: 4px 8px;
+  background: #7c6dfa;
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  font-size: 11px;
+  cursor: pointer;
+}
+.addMsConfirm:hover { background: #9080ff; }
+.addMsCancel {
+  padding: 4px 6px;
+  background: none;
+  border: 1px solid #333;
+  border-radius: 5px;
+  color: #777;
+  font-size: 11px;
+  cursor: pointer;
+}
+.addMsCancel:hover { border-color: #555; color: #aaa; }
+
+/* ── 리스트 영역 ─────────────────────────────────────── */
+.list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.list::-webkit-scrollbar { width: 3px; }
+.list::-webkit-scrollbar-thumb { background: #2a2a3e; border-radius: 2px; }
+
+.empty {
+  text-align: center;
+  color: #444;
+  font-size: 12px;
+  line-height: 1.8;
+  padding: 32px 16px;
+}
+.emptyHint { font-size: 11px; color: #333; }
+
+/* ── 마일스톤 카드 ───────────────────────────────────── */
+.msCard {
+  background: #12121e;
+  border: 1px solid #1e1e30;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.ms_done   { border-color: #1c3a2a; }
+.ms_in_progress { border-color: #2a2a1e; }
+
+.msHeader {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 10px;
+  background: #0e0e1a;
+}
+.msToggle {
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  width: 14px;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+.msToggle:hover { color: #aaa; }
+
+/* 마일스톤 상태 뱃지 */
+.msStatus {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 10px;
+  border: 1px solid;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.mss_todo       { color: #888;    border-color: #333;    background: #ffffff08; }
+.mss_in_progress{ color: #f5a623; border-color: #f5a62344; background: #f5a62312; }
+.mss_done       { color: #4caf82; border-color: #4caf8244; background: #4caf8212; }
+.msStatus:hover { opacity: 0.7; }
+
+.msTitle {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+.msTitleInput {
+  flex: 1;
+  background: #0b0b16;
+  border: 1px solid #7c6dfa66;
+  border-radius: 4px;
+  color: #eee;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  outline: none;
+}
+
+.msProgress {
+  font-size: 10px;
+  color: #555;
+  flex-shrink: 0;
+}
+.msAddTaskBtn {
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  transition: color 0.15s;
+}
+.msAddTaskBtn:hover { color: #7c6dfa; }
+
+.delBtn {
+  background: none;
+  border: none;
+  color: #3a3a4e;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  transition: color 0.15s;
+  flex-shrink: 0;
+}
+.delBtn:hover { color: #ff5555; }
+
+/* ── 태스크 목록 ─────────────────────────────────────── */
+.taskList {
+  padding: 4px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.emptyTasks {
+  font-size: 11px;
+  color: #333;
+  text-align: center;
+  padding: 8px;
+}
+
+/* 태스크 행 */
+.taskRow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 7px;
+  border-radius: 5px;
+  background: #0b0b16;
+  border: 1px solid transparent;
+  transition: border-color 0.1s;
+}
+.taskRow:hover { border-color: #2a2a3e; }
+.task_done { opacity: 0.6; }
+
+/* 태스크 상태 뱃지 */
+.taskStatus {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 8px;
+  border: 1px solid;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.ts_todo       { color: #666;    border-color: #2a2a3e; background: #ffffff06; }
+.ts_in_progress{ color: #f5a623; border-color: #f5a62333; background: #f5a62310; }
+.ts_done       { color: #4caf82; border-color: #4caf8233; background: #4caf8210; }
+.ts_failed     { color: #ff5555; border-color: #ff555533; background: #ff555510; }
+.taskStatus:hover { opacity: 0.7; }
+
+.taskTitle {
+  flex: 1;
+  font-size: 11.5px;
+  color: #bbb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+.taskTitleDone {
+  text-decoration: line-through;
+  color: #555;
+}
+.taskTitleInput {
+  flex: 1;
+  background: #0b0b16;
+  border: 1px solid #7c6dfa66;
+  border-radius: 4px;
+  color: #eee;
+  font-size: 11.5px;
+  padding: 1px 5px;
+  outline: none;
+}
+
+.taskAgent {
+  font-size: 9px;
+  color: #7c6dfa;
+  background: #7c6dfa12;
+  border: 1px solid #7c6dfa22;
+  padding: 1px 4px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.taskFiles {
+  font-size: 10px;
+  color: #555;
+  flex-shrink: 0;
+}
+
+/* 태스크 추가 행 */
+.addTaskRow {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+.addTaskInput {
+  flex: 1;
+  padding: 4px 7px;
+  background: #0b0b16;
+  border: 1px solid #2a2a3e;
+  border-radius: 5px;
+  color: #ddd;
+  font-size: 11px;
+  outline: none;
+}
+.addTaskInput:focus { border-color: #7c6dfa55; }
+.addTaskInput::placeholder { color: #444; }
+.addTaskConfirm {
+  padding: 3px 7px;
+  background: #7c6dfa;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 10px;
+  cursor: pointer;
+}
+.addTaskConfirm:hover { background: #9080ff; }
+.addTaskCancel {
+  padding: 3px 5px;
+  background: none;
+  border: 1px solid #2a2a3e;
+  border-radius: 4px;
+  color: #666;
+  font-size: 10px;
+  cursor: pointer;
+}
+.addTaskCancel:hover { border-color: #555; color: #aaa; }

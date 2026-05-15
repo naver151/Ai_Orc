@@ -18,32 +18,21 @@ router = APIRouter(prefix="/performance", tags=["performance"])
 # ── 메타데이터 ────────────────────────────────────────────────────────────────
 
 PROVIDER_LABELS: dict[str, str] = {
-    "github":  "GPT-4o",
-    "claude":  "Claude",
-    "gemini":  "Gemini",
-    "search":  "웹검색",
-    "crawler": "크롤러",
-    "runner":  "코드실행",
-    "ocr":     "OCR",
-    "whisper": "Whisper",
+    "github": "GPT-4o",
+    "claude": "Claude",
+    "gemini": "Gemini",
 }
 
 PROVIDER_COLORS: dict[str, str] = {
-    "github":  "#4caf82",
-    "claude":  "#7c6dfa",
-    "gemini":  "#f5a623",
-    "search":  "#00b4d8",
-    "crawler": "#0077b6",
-    "runner":  "#06d6a0",
-    "ocr":     "#ffd166",
-    "whisper": "#ef476f",
+    "github": "#4caf82",
+    "claude": "#7c6dfa",
+    "gemini": "#f5a623",
 }
 
 TASK_TYPE_LABELS: dict[str, str] = {
     "code":     "코드 작성",
     "analysis": "분석·조사",
     "writing":  "문서 작성",
-    "search":   "정보 수집",
     "general":  "일반",
 }
 

@@ -16,10 +16,11 @@ def _merge_dict(a: dict, b: dict) -> dict:
     return {**a, **b}
 
 
-class SubTask(TypedDict):
+class SubTask(TypedDict, total=False):
     worker_name: str
     task:        str
-    task_type:   str   # "code" | "analysis" | "writing" | "search" | "general"
+    task_type:   str         # "code" | "analysis" | "writing" | "general"
+    db_task_id:  int | None  # ProjectTask DB id (마일스톤 자동 추적용)
 
 
 class GraphState(TypedDict):
@@ -47,7 +48,6 @@ class GraphState(TypedDict):
     final_synthesis: str
 
     # ── AI 리뷰 단계 ───────────────────────────────────────────
-    review_verdict:   str            # "pass" | "fail"
     review_feedback:  str            # 전체 피드백 텍스트
     review_scores:    dict[str, int | None]  # {worker_name: 1~10 | None}
     retry_count:      int
@@ -61,6 +61,16 @@ class GraphState(TypedDict):
 
     # ── 적응형 분배 ─────────────────────────────────────────────
     distribution_mode: str  # "auto" (DB 기반) | "manual" (LLM 판단)
+
+    # ── 프로젝트 워크스페이스 (선택적 — 없으면 기존 텍스트 모드) ──────────
+    project_id:           int | None   # 연결된 프로젝트 DB ID (없으면 None)
+    workspace_path:       str          # 워크스페이스 절대경로 (없으면 "")
+    project_context:      str          # 파일트리 + 태스크 요약 (plan_node 주입용)
+    created_files:        list[str]    # 이번 세션에서 생성/수정된 파일 목록
+
+    # ── 마일스톤 자동 추적 ─────────────────────────────────────────────────
+    current_milestone_id: int | None   # plan_node에서 생성한 마일스톤 ID
+    current_task_db_id:   int | None   # worker_node에서 읽는 개별 태스크 ID
 
     # ── 런타임 전용 (직렬화 안 함 — 체크포인터 미사용) ────────
     websocket:         Any  # FastAPI WebSocket

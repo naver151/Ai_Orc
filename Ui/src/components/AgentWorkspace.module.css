@@ -1,7 +1,10 @@
 /* ── 전체 씬 ─────────────────────────────────────── */
 .scene {
-  position: absolute;
-  inset: 0;
+  /* wsFullBody(flex row) 안에서 남은 공간을 모두 차지하도록 flex: 1 */
+  flex: 1;
+  min-width: 0;
+  /* 자체적으로는 absolute 포지셔닝 컨텍스트 제공 */
+  position: relative;
   z-index: 50;
   overflow: hidden;
 }
@@ -399,6 +402,94 @@
   border: 1px solid;
   letter-spacing: 0.04em;
   margin-top: 4px;
+}
+
+/* ── 에이전트 탭 바 ──────────────────────────────── */
+.tabBar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 10px;
+  background: #0d0d15;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  min-height: 38px;
+}
+.tabBar::-webkit-scrollbar { display: none; }
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #555;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.tab:hover {
+  color: #aaa;
+  background: rgba(255,255,255,0.05);
+  border-color: rgba(255,255,255,0.08);
+}
+.tabActive {
+  color: #e0e0e0 !important;
+  background: #1e1e30 !important;
+  border-color: rgba(124,109,250,0.3) !important;
+}
+
+.tabDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.tabName {
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tabBadge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+
+/* 읽지 않은 메시지 뱃지 */
+.tabUnread {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  animation: popIn 0.2s cubic-bezier(0.34,1.56,0.64,1);
+  pointer-events: none;
+}
+@keyframes popIn {
+  from { transform: scale(0); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
 }
 
 /* ── 스트림 영역 (오른쪽) ────────────────────────── */
@@ -1123,6 +1214,70 @@
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* ── 파일 트리 패널 연동 ──────────────────────────── */
+/*
+ * FileTreePanel은 workBody(flex row) 안 세 번째 컬럼으로 배치됨.
+ * workBody 자체가 이미 flex row이므로 별도 레이아웃 처리 불필요.
+ * .withFileTree 클래스는 예비 마커 용도만 유지.
+ */
+.withFileTree {
+  /* no-op: workBody flex row가 FileTreePanel을 자동 수용 */
+}
+
+/* ── 파일 생성 로그 라인 ─────────────────────────── */
+.fileLog {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  color: #7c6dfa;
+  font-size: 11.5px;
+  border-left: 2px solid #7c6dfa44;
+  padding-left: 8px;
+  margin: 2px 0;
+}
+.fileLogIcon { font-size: 13px; flex-shrink: 0; }
+
+/* ── 도구 호출 로그 ──────────────────────────────── */
+.toolLog {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0 3px 8px;
+  color: #f5a623;
+  font-size: 11px;
+  border-left: 2px solid #f5a62344;
+  margin: 2px 0;
+}
+.toolLogIcon { font-size: 13px; flex-shrink: 0; }
+.toolLogText { color: #ccc; }
+
+/* ── 코드 실행 로그 ──────────────────────────────── */
+.codeLog {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0 3px 8px;
+  color: #4caf82;
+  font-size: 11px;
+  border-left: 2px solid #4caf8244;
+  margin: 2px 0;
+}
+.codeLogIcon { font-size: 13px; flex-shrink: 0; }
+
+/* ── 코드 실행 결과 ──────────────────────────────── */
+.codeResultLog {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-family: 'Menlo', 'Consolas', monospace;
+  border-left: 2px solid #4caf82;
+  background: #ffffff06;
+  border-radius: 0 4px 4px 0;
+  color: #ccc;
+  white-space: pre-wrap;
+  margin: 2px 0;
 }
 
 /* ── 반응형 ──────────────────────────────────────── */

@@ -21,9 +21,10 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv(override=True, encoding="utf-8")
 
-# GitHub Models 동시 요청 제한: 최대 2개
-# 모든 LLM 호출은 이 세마포어를 통과해야 함
-_LLM_SEMAPHORE = asyncio.Semaphore(2)
+# GitHub Models 동시 요청 제한
+# GitHub 무료 티어 rate limit이 빡빡하므로 순차 실행(1)으로 충돌 방지
+# 유료 API(Claude/GPT/Gemini) 사용 시 2~4로 늘려도 됨
+_LLM_SEMAPHORE = asyncio.Semaphore(1)
 
 
 async def safe_ainvoke(
@@ -31,20 +32,27 @@ async def safe_ainvoke(
     messages: list,
     config: RunnableConfig | None = None,
     max_retries: int = 4,
-    base_delay: float = 1.5,
+    base_delay: float = 2.0,
+    timeout: float = 120.0,
 ):
     """
     Rate limit(429) 보호 래퍼.
     - Semaphore(2): 동시 호출을 2개 이하로 제한
-    - 지수 백오프: 429 발생 시 1.5s → 3s → 6s → 12s 후 재시도
+    - 지수 백오프: 429 발생 시 2s → 4s → 8s → 16s 후 재시도
+    - timeout: 단일 호출 최대 대기 시간 (기본 120초)
     """
     last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:
             async with _LLM_SEMAPHORE:
-                if config is not None:
-                    return await model.ainvoke(messages, config=config)
-                return await model.ainvoke(messages)
+                coro = (
+                    model.ainvoke(messages, config=config)
+                    if config is not None
+                    else model.ainvoke(messages)
+                )
+                return await asyncio.wait_for(coro, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"LLM 응답 시간 초과 ({timeout}초)")
         except Exception as e:
             msg = str(e)
             if "429" in msg or "RateLimit" in msg or "rate_limit" in msg.lower():
@@ -58,14 +66,20 @@ async def safe_ainvoke(
 GITHUB_ENDPOINT = "https://models.inference.ai.azure.com"
 
 _GITHUB_ALIASES: dict[str, str] = {
-    "github":           "gpt-4o",
-    "github-gpt4o":     "gpt-4o",
-    "github-gpt4o-mini":"gpt-4o-mini",
-    "github-llama":     "Meta-Llama-3.1-70B-Instruct",
-    "github-llama-70b": "Meta-Llama-3.1-70B-Instruct",
-    "github-llama-8b":  "Meta-Llama-3.1-8B-Instruct",
-    "github-mistral":   "Mistral-large",
-    "github-phi":       "Phi-3.5-mini-instruct",
+    "github":             os.getenv("GITHUB_MODEL", "gpt-4.1"),  # .env의 GITHUB_MODEL 우선
+    "github-gpt41":       "gpt-4.1",
+    "github-gpt41-mini":  "gpt-4.1-mini",
+    "github-gpt41-nano":  "gpt-4.1-nano",
+    "github-gpt4o":       "gpt-4o",
+    "github-gpt4o-mini":  "gpt-4o-mini",
+    "github-o1":          "o1",
+    "github-o1-mini":     "o1-mini",
+    "github-o3-mini":     "o3-mini",
+    "github-llama":       "Meta-Llama-3.1-70B-Instruct",
+    "github-llama-70b":   "Meta-Llama-3.1-70B-Instruct",
+    "github-llama-8b":    "Meta-Llama-3.1-8B-Instruct",
+    "github-mistral":     "Mistral-large",
+    "github-phi":         "Phi-3.5-mini-instruct",
 }
 
 

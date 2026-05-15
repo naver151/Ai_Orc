@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import styles from './ChatPage.module.css'
 import AgentWorkspace from './AgentWorkspace'
+import ProjectSelector from './ProjectSelector'
+import MilestoneBoard from './MilestoneBoard'
+import SessionPanel   from './SessionPanel'
 import { sendChatMessage, generateChatResponse, analyzeRequest, detectProjectIntent } from '../utils/agentManager'
 
 
@@ -139,6 +142,9 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
   const [workspace, setWorkspace]     = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [chatModalOpen, setChatModalOpen] = useState(false)
+  const [projectId, setProjectId]         = useState(null)   // 선택된 프로젝트 ID
+  const [milestoneOpen, setMilestoneOpen] = useState(false)  // MilestoneBoard 패널
+  const [sessionOpen,   setSessionOpen]   = useState(false)  // SessionPanel 패널
 
   const busy = false
 
@@ -362,11 +368,42 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
     setTimeout(() => inputRef.current?.focus(), 50)
   }
 
+  // ── 사이드 패널 토글 (하나만 열림) ──────────────────────
+  const toggleMilestone = () => {
+    setMilestoneOpen(o => { const next = !o; if (next) setSessionOpen(false); return next })
+  }
+  const toggleSession = () => {
+    setSessionOpen(o => { const next = !o; if (next) setMilestoneOpen(false); return next })
+  }
+
+  // ── 채팅 없이 바로 워크스페이스 열기 ──────────────────────
+  const handleOpenWorkspace = async () => {
+    // 기본 에이전트 세트 (백엔드 호출 없이 즉시 진입)
+    const defaultAgents = [
+      {
+        roleKey: 'analyst',  name: '관리자 AI',   task: '명령을 기다리는 중...',
+        aiType: 'github', color: '#7c6dfa', handoffMsg: null, isManager: true, provider: 'github',
+      },
+      {
+        roleKey: 'executor', name: '작업자 AI A',  task: '명령을 기다리는 중...',
+        aiType: 'github', color: '#4caf82', handoffMsg: null, isManager: false, provider: 'github',
+      },
+      {
+        roleKey: 'writer',   name: '작업자 AI B',  task: '명령을 기다리는 중...',
+        aiType: 'github', color: '#f5a623', handoffMsg: null, isManager: false, provider: 'github',
+      },
+    ]
+    setWorkspace({ id: Date.now(), agents: defaultAgents, request: '', instant: false })
+    setChatModalOpen(true)   // 플로팅 챗 모달을 바로 열어줌
+  }
+
   // ── 워크스페이스 닫기 (채팅으로 복귀) ────────────────────
   const handleCloseWorkspace = () => {
     setWorkspace(null)
     setMode('chat')
     setChatModalOpen(false)
+    setMilestoneOpen(false)
+    setSessionOpen(false)
     addMsg({ role: 'ai', text: '작업이 완료되었습니다. 추가로 도움이 필요하시면 말씀해 주세요.' })
     setTimeout(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -532,7 +569,32 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
                   <div className={styles.wsFullDot} />
                   <span className={styles.wsFullTitle}>AI 에이전트 협업</span>
                 </div>
+                {/* 프로젝트 선택기 — 워크스페이스 헤더 중앙 */}
+                <ProjectSelector
+                  projectId={projectId}
+                  onProjectChange={id => { setProjectId(id); setMilestoneOpen(false); setSessionOpen(false) }}
+                />
                 <div className={styles.wsFullHeaderRight}>
+                  {/* 마일스톤 보드 토글 */}
+                  {projectId && (
+                    <button
+                      className={`${styles.panelToggleBtn} ${milestoneOpen ? styles.panelToggleBtnActive : ''}`}
+                      onClick={toggleMilestone}
+                      title="마일스톤 / 태스크"
+                    >
+                      📋
+                    </button>
+                  )}
+                  {/* 세션 이력 토글 */}
+                  {projectId && (
+                    <button
+                      className={`${styles.panelToggleBtn} ${sessionOpen ? styles.panelToggleBtnActive : ''}`}
+                      onClick={toggleSession}
+                      title="세션 이력"
+                    >
+                      📅
+                    </button>
+                  )}
                   <button className={styles.fontSizeBtn} onClick={onFontSizeCycle} title="글씨 크기">
                     {fontLabel}
                   </button>
@@ -548,6 +610,19 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
                   agents={workspace.agents}
                   request={workspace.request}
                   instant={workspace.instant ?? false}
+                  projectId={projectId}
+                />
+                {/* 마일스톤 보드 패널 */}
+                <MilestoneBoard
+                  projectId={projectId}
+                  visible={milestoneOpen}
+                  onClose={() => setMilestoneOpen(false)}
+                />
+                {/* 세션 이력 패널 */}
+                <SessionPanel
+                  projectId={projectId}
+                  visible={sessionOpen}
+                  onClose={() => setSessionOpen(false)}
                 />
               </div>
             </div>
@@ -632,6 +707,24 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
                 <div className={styles.topbarName}>관리자 AI</div>
                 <div className={styles.topbarStatus}>온라인</div>
               </div>
+              {/* 프로젝트 선택기 */}
+              <ProjectSelector
+                projectId={projectId}
+                onProjectChange={id => { setProjectId(id); setMilestoneOpen(false); setSessionOpen(false) }}
+              />
+              {/* 워크스페이스 바로 열기 */}
+              <button
+                className={styles.workspaceBtn}
+                onClick={handleOpenWorkspace}
+                title="워크스페이스 열기"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                  <line x1="8" y1="21" x2="16" y2="21"/>
+                  <line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+                <span>워크스페이스</span>
+              </button>
               {user?.name && (
                 <div className={styles.userBadge}>{user.name}</div>
               )}

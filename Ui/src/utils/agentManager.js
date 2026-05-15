@@ -58,31 +58,17 @@ export async function sendChatMessage(userText, messages, onChunk) {
 }
 
 const AI_ROLE_MAP = {
-  // LLM
   analyst:   'claude',
   collector: 'gemini',
   executor:  'gpt',
   reviewer:  'claude',
   writer:    'gpt',
-  // Non-LLM (provider_key와 동일)
-  search:    'search',
-  crawler:   'crawler',
-  runner:    'runner',
-  ocr:       'ocr',
-  whisper:   'whisper',
 }
 
 export const AI_LABELS = {
-  // LLM
-  claude:   { label: 'Claude',    color: '#7c6dfa' },
-  gpt:      { label: 'GPT-4o',    color: '#4caf82' },
-  gemini:   { label: 'Gemini',    color: '#f5a623' },
-  // Non-LLM
-  search:   { label: '🔍 검색',   color: '#00b4d8' },
-  crawler:  { label: '🌐 크롤러', color: '#0077b6' },
-  runner:   { label: '🐍 코드',   color: '#06d6a0' },
-  ocr:      { label: '📄 OCR',    color: '#ffd166' },
-  whisper:  { label: '🎙️ 음성',   color: '#ef476f' },
+  claude:  { label: 'Claude',  color: '#7c6dfa' },
+  gpt:     { label: 'GPT-4o',  color: '#4caf82' },
+  gemini:  { label: 'Gemini',  color: '#f5a623' },
 }
 
 // ── 에이전트 핸드오프 메시지 ─────────────────────────────────
@@ -199,20 +185,6 @@ export async function analyzeRequest(userText) {
       })),
       summary: '에이전트 협업이 완료됐습니다.',
     }
-  }
-}
-
-// ── 채팅 기록 조회 (DB) ──────────────────────────────────────
-export async function fetchChatHistory(uid, limit = 50) {
-  if (!uid) return []
-  try {
-    const res = await fetch(
-      `${BACKEND}/chat/history?user_uid=${encodeURIComponent(uid)}&limit=${limit}`
-    )
-    if (!res.ok) return []
-    return await res.json()
-  } catch {
-    return []
   }
 }
 

@@ -5,7 +5,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import Base, engine
-from app.routes.project import router as project_router
+from app.routes.workspace import router as workspace_router   # project + 파일시스템 통합
 from app.routes.agent import router as agent_router
 from app.routes.task import router as task_router
 from app.routes.orchestrator import router as orchestrator_router
@@ -17,8 +17,33 @@ from app.routes.performance import router as performance_router
 from app.connection_manager import connection_manager
 from app.ai.agent_runner import agent_manager
 
-# DB 테이블 초기화
+# DB 테이블 초기화 (새 테이블 생성)
 Base.metadata.create_all(bind=engine)
+
+# ── 스키마 마이그레이션 (기존 테이블 컬럼 추가) ──────────────────
+# create_all은 새 테이블만 만들고 기존 테이블은 수정하지 않으므로
+# 누락된 컬럼을 ALTER TABLE로 안전하게 추가한다.
+def _run_migrations() -> None:
+    migrations = [
+        # projects 테이블 — workspace_path, created_at 컬럼 추가
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS workspace_path VARCHAR;",
+        "ALTER TABLE projects ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();",
+        # workspace_files — updated_at onupdate 트리거 컬럼 보장
+        "ALTER TABLE workspace_files ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();",
+    ]
+    with engine.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(__import__("sqlalchemy").text(sql))
+            except Exception as e:
+                print(f"[migration] 건너뜀: {e}")
+        conn.commit()
+
+try:
+    _run_migrations()
+    print("[migration] 스키마 마이그레이션 완료")
+except Exception as _e:
+    print(f"[migration] 마이그레이션 실패 (무시): {_e}")
 
 app = FastAPI(title="AI Crew Commander Backend")
 
@@ -32,7 +57,7 @@ app.add_middleware(
 )
 
 # ── REST 라우터 ───────────────────────────────────────────────
-app.include_router(project_router)
+app.include_router(workspace_router)   # /projects/ + /projects/{id}/workspace/
 app.include_router(agent_router)
 app.include_router(task_router)
 app.include_router(orchestrator_router)
@@ -107,6 +132,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not text:
                     continue
 
+                # projectId가 있으면 워크스페이스 모드로 실행
+                project_id: int | None = data.get("projectId") or None
+
                 state = agent_manager.get_or_create(ai_name)
 
                 # 이전 작업이 실행 중이면 취소 후 새 작업 시작
@@ -120,7 +148,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 첫 번째 에이전트(관리자)이면 오케스트레이션, 아니면 일반 채팅
                 if agent_manager.is_manager(ai_name):
                     state.current_task = asyncio.create_task(
-                        agent_manager.run_orchestrated_prompt(ai_name, text, websocket)
+                        agent_manager.run_orchestrated_prompt(
+                            ai_name, text, websocket, project_id=project_id
+                        )
                     )
                 else:
                     state.current_task = asyncio.create_task(

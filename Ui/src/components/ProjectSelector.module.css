@@ -1,0 +1,227 @@
+.wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: #1e1e2e;
+  border: 1px solid #2a2a3e;
+  border-radius: 8px;
+  color: #888;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  max-width: 200px;
+}
+.trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 130px;
+}
+.trigger:hover {
+  border-color: #444;
+  color: #bbb;
+}
+.trigger.active {
+  border-color: #7c6dfa55;
+  color: #a897ff;
+  background: #1a1830;
+}
+
+/* 드롭다운 */
+.dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 260px;
+  background: #1a1a2e;
+  border: 1px solid #2a2a3e;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px #0008;
+  z-index: 9999;
+  overflow: hidden;
+  animation: fadeIn 0.12s ease;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── 항목 래퍼 (hover 시 액션 버튼 노출) ─────────────────── */
+.itemWrap { position: relative; }
+
+.itemRow {
+  display: flex;
+  align-items: center;
+}
+.itemRow .item { flex: 1; }
+
+.itemActions {
+  display: flex;
+  gap: 2px;
+  padding: 0 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.itemWrap:hover .itemActions { opacity: 1; }
+
+.actionBtn {
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #666;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s;
+  flex-shrink: 0;
+}
+.actionBtn:hover {
+  background: #ffffff10;
+  border-color: #444;
+  color: #bbb;
+}
+.actionBtnDel:hover {
+  background: #ff6b6b15;
+  border-color: #ff6b6b44;
+  color: #ff6b6b;
+}
+
+/* 삭제 확인 영역 */
+.deleteConfirm {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #1e0e0e;
+  border-left: 2px solid #ff6b6b44;
+}
+
+.deleteMsg {
+  font-size: 12px;
+  color: #ffaaaa;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.deleteIcon { font-size: 14px; }
+
+.deleteBtn {
+  flex: 1;
+  padding: 5px;
+  background: #c0392b;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.deleteBtn:hover:not(:disabled) { background: #e74c3c; }
+.deleteBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  background: none;
+  border: none;
+  color: #ccc;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+.item:hover { background: #ffffff0a; }
+.item.selected { color: #a897ff; }
+
+.itemIcon { font-size: 14px; flex-shrink: 0; }
+.itemMeta { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.itemText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.itemDesc {
+  font-size: 11px;
+  color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.check { color: #7c6dfa; font-size: 12px; margin-left: auto; flex-shrink: 0; }
+
+.divider {
+  height: 1px;
+  background: #2a2a3e;
+  margin: 3px 0;
+}
+
+.createBtn { color: #7c6dfa; }
+.createBtn:hover { background: #7c6dfa11; }
+
+/* 생성/수정 폼 */
+.createForm {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.input {
+  padding: 6px 8px;
+  background: #0e0e1a;
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  color: #ddd;
+  font-size: 12px;
+  outline: none;
+}
+.input:focus { border-color: #7c6dfa88; }
+.input::placeholder { color: #555; }
+
+.error {
+  font-size: 11px;
+  color: #ff6b6b;
+  padding: 0 12px 4px;
+}
+
+.formBtns {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.submitBtn {
+  flex: 1;
+  padding: 5px;
+  background: #7c6dfa;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.submitBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+.submitBtn:hover:not(:disabled) { background: #9080ff; }
+
+.cancelBtn {
+  padding: 5px 10px;
+  background: none;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #888;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.cancelBtn:hover { border-color: #555; color: #bbb; }

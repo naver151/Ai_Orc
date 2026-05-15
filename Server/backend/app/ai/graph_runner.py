@@ -31,7 +31,6 @@ from langgraph.types import Send
 from app.ai.graph_state import GraphState, SubTask
 from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke
 from app.ai.lc_memory import save_agent_memory, build_rag_context
-from app.ai.non_llm_runners import NON_LLM_RUNNERS, NON_LLM_LABELS
 
 _ORCHESTRATE_RE = re.compile(r"<ORCHESTRATE>(.*?)</ORCHESTRATE>", re.DOTALL)
 
@@ -51,8 +50,6 @@ def _classify_task_type(task_text: str) -> str:
         return 'analysis'
     if any(k in t for k in ['작성', '문서', '보고서', '정리', 'writing', 'document', 'report']):
         return 'writing'
-    if any(k in t for k in ['검색', 'search', 'crawl', '크롤', '수집', '데이터 수집']):
-        return 'search'
     return 'general'
 
 
@@ -143,16 +140,10 @@ def _save_performance_sync(task_type: str, provider: str, score: int) -> None:
 # ── 교차 리뷰 모델 매핑 ───────────────────────────────────────────────────────
 # 워커가 쓴 모델과 다른 모델로 리뷰 → 서로 다른 시각 확보
 _CROSS_REVIEW_MAP: dict[str, str] = {
-    "github":  "claude",
-    "gpt":     "claude",
-    "claude":  "github",
-    "gemini":  "claude",
-    # Non-LLM 결과도 LLM이 검토
-    "search":  "claude",
-    "crawler": "claude",
-    "runner":  "github",
-    "ocr":     "github",
-    "whisper": "github",
+    "github": "claude",
+    "gpt":    "claude",
+    "claude": "github",
+    "gemini": "claude",
 }
 
 def _get_reviewer_key(worker_provider: str) -> str:
@@ -173,6 +164,8 @@ _MANAGER_SYSTEM = (
 
     "■ 현재 팀 구성\n"
     "{worker_list}\n\n"
+
+    "{project_context}"
 
     "■ 작업 분배 판단 기준\n"
     "분배 필요: 서로 독립적으로 병렬 처리 가능한 서브태스크 2개 이상\n"
@@ -245,6 +238,114 @@ def _inject_memory(ai_name: str, text: str) -> str:
     return f"{rag}[현재 요청]\n{text}"
 
 
+# ── 마일스톤 DB 헬퍼 (동기 — asyncio.to_thread 전용) ─────────────────────────
+
+def _create_session_milestone(
+    project_id:  int,
+    plan_summary: str,
+    subtasks:    list,
+) -> tuple[int | None, list[int | None]]:
+    """
+    plan_node 이후 호출.
+    세션 단위 Milestone 1개 + subtask마다 ProjectTask 생성.
+    Returns: (milestone_id, [task_id, ...])
+    """
+    from app.db import SessionLocal
+    from app.models import Milestone, ProjectTask
+    try:
+        db = SessionLocal()
+        ms = Milestone(
+            project_id=project_id,
+            title=(plan_summary[:100] if plan_summary else "작업 세션"),
+            status="in_progress",
+            order=0,
+        )
+        db.add(ms)
+        db.flush()   # ms.id 확보
+
+        task_ids: list[int | None] = []
+        for i, st in enumerate(subtasks):
+            task = ProjectTask(
+                milestone_id=ms.id,
+                project_id=project_id,
+                title=(st.get("task", "")[:200] or f"태스크 {i+1}"),
+                description=st.get("task", ""),
+                status="todo",
+                order=i,
+            )
+            db.add(task)
+            db.flush()
+            task_ids.append(task.id)
+
+        db.commit()
+        return ms.id, task_ids
+    except Exception:
+        return None, [None] * len(subtasks)
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _update_task_status_sync(
+    project_id: int,
+    task_id:    int,
+    status:     str,
+    agent_name: str = "",
+) -> None:
+    """worker_node 시작/완료 시 태스크 상태 업데이트."""
+    from app.db import SessionLocal
+    from app.models import ProjectTask
+    from datetime import datetime, timezone
+    try:
+        db = SessionLocal()
+        task = db.query(ProjectTask).filter(
+            ProjectTask.id == task_id,
+            ProjectTask.project_id == project_id,
+        ).first()
+        if task:
+            task.status = status
+            if agent_name:
+                task.assigned_agent = agent_name
+            if status == "done" and not task.completed_at:
+                task.completed_at = datetime.now(timezone.utc)
+            elif status != "done":
+                task.completed_at = None
+            db.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _finish_milestone_sync(project_id: int, milestone_id: int) -> None:
+    """모든 태스크 완료 후 마일스톤을 done으로 전환."""
+    from app.db import SessionLocal
+    from app.models import Milestone, ProjectTask
+    try:
+        db = SessionLocal()
+        ms = db.query(Milestone).filter(
+            Milestone.id == milestone_id,
+            Milestone.project_id == project_id,
+        ).first()
+        if ms:
+            all_tasks = db.query(ProjectTask).filter(ProjectTask.milestone_id == milestone_id).all()
+            if all_tasks and all(t.status in ("done", "failed") for t in all_tasks):
+                ms.status = "done"
+                db.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
 # ── 노드 구현 ────────────────────────────────────────────────────────────────
 
 async def plan_node(state: GraphState) -> dict:
@@ -268,15 +369,24 @@ async def plan_node(state: GraphState) -> dict:
     await ws.send_json({"type": "progress",     "aiName": manager, "percent": 0})
     await ws.send_json({"type": "current_task", "aiName": manager, "task": "작업 분석 중..."})
 
-    # 시스템 프롬프트
-    worker_list = "\n".join(f"- 팀원 {i+1}: {n}" for i, n in enumerate(workers))
-    system = _MANAGER_SYSTEM.format(worker_list=worker_list)
+    # 시스템 프롬프트 (프로젝트 컨텍스트 주입)
+    worker_list     = "\n".join(f"- 팀원 {i+1}: {n}" for i, n in enumerate(workers))
+    project_context = state.get("project_context", "")
+    project_ctx_section = (
+        f"■ 프로젝트 현황 (이미 완료된 작업 및 파일 — 중복 작업 금지)\n{project_context}\n\n"
+        if project_context else ""
+    )
+    system = _MANAGER_SYSTEM.format(
+        worker_list=worker_list,
+        project_context=project_ctx_section,
+    )
 
     # 메모리 주입
     enriched = _inject_memory(manager, text)
 
     # 조용히 호출 (스트리밍 없음, rate limit 보호)
     model = get_lc_model(provider_key, streaming=False)
+    await ws.send_json({"type": "log", "aiName": manager, "message": "⏳ AI 응답 대기 중...\n"})
     try:
         resp = await safe_ainvoke(
             model,
@@ -348,6 +458,19 @@ async def plan_node(state: GraphState) -> dict:
             "task_type":   task_type,
         })
 
+    # ── 마일스톤·태스크 자동 생성 (프로젝트 모드) ───────────────────────
+    project_id   = state.get("project_id")
+    milestone_id = None
+    if project_id and subtasks:
+        milestone_id, task_ids = await asyncio.to_thread(
+            _create_session_milestone, project_id, plan_summary, subtasks
+        )
+        # subtask에 db_task_id 주입
+        subtasks = [
+            {**st, "db_task_id": tid}
+            for st, tid in zip(subtasks, task_ids)
+        ]
+
     # 계획 요약 + 배분 이벤트
     await ws.send_json({"type": "log", "aiName": manager,
                         "message": f"[계획 완료] {plan_summary}"})
@@ -358,11 +481,12 @@ async def plan_node(state: GraphState) -> dict:
     await ws.send_json({"type": "current_task", "aiName": manager, "task": ""})
 
     return {
-        "is_direct":    False,
-        "direct_answer": "",
-        "plan_summary": plan_summary,
-        "subtasks":     subtasks,
-        "worker_results": {},
+        "is_direct":           False,
+        "direct_answer":       "",
+        "plan_summary":        plan_summary,
+        "subtasks":            subtasks,
+        "worker_results":      {},
+        "current_milestone_id": milestone_id,
     }
 
 
@@ -383,6 +507,14 @@ async def worker_node(state: GraphState) -> dict:
     if await _check_control(state, worker_name):
         return {"worker_results": {worker_name: ""}}
 
+    # ── 태스크 상태: in_progress ─────────────────────────────────────────
+    db_task_id = state.get("current_task_db_id")
+    project_id = state.get("project_id")
+    if db_task_id and project_id:
+        await asyncio.to_thread(
+            _update_task_status_sync, project_id, db_task_id, "in_progress", worker_name
+        )
+
     # 이미 완료된 동료 결과를 컨텍스트로 주입 (공유 화이트보드)
     peer_context = ""
     existing = state.get("worker_results", {})
@@ -402,28 +534,101 @@ async def worker_node(state: GraphState) -> dict:
 
     result = ""
 
-    # ── Non-LLM 분기 ──────────────────────────────────────────────────────────
-    if provider_key in NON_LLM_RUNNERS:
-        label = NON_LLM_LABELS.get(provider_key, provider_key.upper())
-        await ws.send_json({"type": "status",   "aiName": worker_name, "status": "RUNNING"})
-        await ws.send_json({"type": "progress", "aiName": worker_name, "percent": 0})
-        await ws.send_json({"type": "log", "aiName": worker_name,
-                            "message": f"{label} 실행 중..."})
-        try:
-            result = await NON_LLM_RUNNERS[provider_key](task_text)
-        except Exception as e:
-            result = f"[{provider_key.upper()} 오류] {e}"
+    # ── LLM 실행 (워크스페이스 유무에 따라 도구 바인딩 분기) ─────────────────
+    workspace_path = state.get("workspace_path", "")
+    project_id     = state.get("project_id")
 
-        await ws.send_json({"type": "log",      "aiName": worker_name, "message": result})
-        await ws.send_json({"type": "status",   "aiName": worker_name, "status": "COMPLETED"})
-        await ws.send_json({"type": "progress", "aiName": worker_name, "percent": 100})
+    handler = ProgressWSStreamHandler(ws, worker_name)
+    cfg     = RunnableConfig(callbacks=[handler])
 
-    # ── LLM 분기 ──────────────────────────────────────────────────────────────
+    if workspace_path and project_id:
+        # ── 도구 바인딩 모드: LLM이 파일 읽기/쓰기/실행 가능 ──────────────
+        from app.ai.workspace_tools import WorkspaceTools
+        from langchain_core.messages import ToolMessage
+
+        ws_tools = WorkspaceTools(
+            workspace_path=workspace_path,
+            project_id=project_id,
+            ws=ws,
+            agent_name=worker_name,
+        )
+        tools     = ws_tools.get_tools()
+        tool_map  = {t.name: t for t in tools}
+        model     = get_lc_model(provider_key, streaming=False).bind_tools(tools)
+
+        worker_system = (
+            "당신은 프로젝트 워크스페이스에 실제 파일을 생성하는 AI 개발자입니다.\n\n"
+            "⚠️ 절대 규칙 — 반드시 지켜야 합니다:\n"
+            "• 코드를 텍스트나 마크다운(``` 블록)으로 출력하면 안 됩니다.\n"
+            "• 모든 코드·설정·문서는 반드시 write_file 도구를 호출해 파일로 저장하세요.\n"
+            "• 파일을 저장하지 않으면 작업 실패로 간주됩니다.\n\n"
+            "■ 작업 순서\n"
+            "1. list_files 로 현재 파일 목록 확인\n"
+            "2. 필요한 파일마다 write_file 호출 (경로는 워크스페이스 루트 기준 상대경로)\n"
+            "   예: write_file(path='src/main.py', content='...')\n"
+            "3. 모든 파일 저장 후 '저장 완료: [파일목록]' 형식으로 요약\n\n"
+            "■ 경로 규칙\n"
+            "• Python 프로젝트: src/main.py, src/models.py, requirements.txt\n"
+            "• FastAPI: src/main.py, src/routers/, requirements.txt\n"
+            "• 절대경로 사용 금지 — 항상 상대경로\n"
+        )
+        messages  = _build_messages(worker_system, enriched)
+
+        # 도구 호출 루프 (최대 10회 반복)
+        for loop_i in range(10):
+            if await _check_control(state, worker_name):
+                break
+            # 대기 중 상태 알림
+            await ws.send_json({
+                "type":    "log",
+                "aiName":  worker_name,
+                "message": f"⏳ AI 응답 대기 중 (단계 {loop_i + 1})...\n",
+            })
+            try:
+                resp = await safe_ainvoke(model, messages, config=RunnableConfig(callbacks=[]))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                result = f"[오류] {e}"
+                await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
+                break
+
+            messages.append(resp)
+
+            if not resp.tool_calls:
+                # 도구 호출 없음 → 최종 답변
+                result = resp.content or ""
+                if result:
+                    await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
+                break
+
+            # 도구 실행
+            for tc in resp.tool_calls:
+                tool_name = tc["name"]
+                tool_args = tc["args"]
+                tool_id   = tc["id"]
+
+                await ws.send_json({
+                    "type":    "tool_call",
+                    "aiName":  worker_name,
+                    "tool":    tool_name,
+                    "args":    tool_args,
+                    "message": f"🔧 {tool_name}({', '.join(f'{k}={repr(v)[:60]}' for k, v in tool_args.items())})",
+                })
+
+                if tool_name in tool_map:
+                    try:
+                        tool_result = await tool_map[tool_name].ainvoke(tool_args)
+                    except Exception as e:
+                        tool_result = f"[도구 오류] {e}"
+                else:
+                    tool_result = f"[오류] 알 수 없는 도구: {tool_name}"
+
+                messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_id))
+
     else:
-        handler = ProgressWSStreamHandler(ws, worker_name)
-        cfg = RunnableConfig(callbacks=[handler])
+        # ── 기본 모드: 도구 없이 텍스트 생성 (하위 호환) ─────────────────
         model = get_lc_model(provider_key, streaming=True)
-
         try:
             resp = await safe_ainvoke(model, _build_messages("", enriched), config=cfg)
             result = resp.content
@@ -439,6 +644,17 @@ async def worker_node(state: GraphState) -> dict:
             save_agent_memory(worker_name, task_text, result[:2000])
         except Exception:
             pass
+
+    # ── 태스크 상태: done / failed ────────────────────────────────────────
+    if db_task_id and project_id:
+        final_status = "failed" if (result or "").startswith("[오류]") else "done"
+        await asyncio.to_thread(
+            _update_task_status_sync, project_id, db_task_id, final_status
+        )
+        # 마일스톤 완료 여부 확인
+        milestone_id = state.get("current_milestone_id")
+        if milestone_id:
+            await asyncio.to_thread(_finish_milestone_sync, project_id, milestone_id)
 
     await ws.send_json({"type": "current_task", "aiName": worker_name, "task": ""})
 
@@ -490,7 +706,7 @@ async def synthesize_node(state: GraphState) -> dict:
 
     # 시스템 프롬프트
     worker_list = "\n".join(f"- 팀원 {i+1}: {n}" for i, n in enumerate(state["worker_names"]))
-    system = _MANAGER_SYSTEM.format(worker_list=worker_list)
+    system = _MANAGER_SYSTEM.format(worker_list=worker_list, project_context="")
 
     # 스트리밍
     handler = ProgressWSStreamHandler(ws, manager)
@@ -720,16 +936,79 @@ async def retry_node(state: GraphState) -> dict:
 
     result = ""
 
-    if provider_key in NON_LLM_RUNNERS:
-        try:
-            result = await NON_LLM_RUNNERS[provider_key](enriched)
-        except Exception as e:
-            result = f"[{provider_key.upper()} 재실행 오류] {e}"
-        await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
-        await ws.send_json({"type": "status", "aiName": worker_name, "status": "COMPLETED"})
+    workspace_path = state.get("workspace_path", "")
+    project_id     = state.get("project_id")
+
+    handler = ProgressWSStreamHandler(ws, worker_name)
+    cfg = RunnableConfig(callbacks=[handler])
+
+    if workspace_path and project_id:
+        # 워크스페이스 모드 재실행 (도구 바인딩)
+        from app.ai.workspace_tools import WorkspaceTools
+        from langchain_core.messages import ToolMessage
+
+        ws_tools = WorkspaceTools(
+            workspace_path=workspace_path,
+            project_id=project_id,
+            ws=ws,
+            agent_name=worker_name,
+        )
+        tools    = ws_tools.get_tools()
+        tool_map = {t.name: t for t in tools}
+        model    = get_lc_model(provider_key, streaming=False).bind_tools(tools)
+
+        worker_system = (
+            "당신은 프로젝트 워크스페이스에 실제 파일을 생성하는 AI 개발자입니다.\n\n"
+            "⚠️ 절대 규칙 — 반드시 지켜야 합니다:\n"
+            "• 코드를 텍스트나 마크다운(``` 블록)으로 출력하면 안 됩니다.\n"
+            "• 모든 코드·설정·문서는 반드시 write_file 도구를 호출해 파일로 저장하세요.\n"
+            "• 파일을 저장하지 않으면 작업 실패로 간주됩니다.\n\n"
+            "■ 작업 순서\n"
+            "1. list_files 로 현재 파일 목록 확인\n"
+            "2. 필요한 파일마다 write_file 호출 (경로는 워크스페이스 루트 기준 상대경로)\n"
+            "   예: write_file(path='src/main.py', content='...')\n"
+            "3. 모든 파일 저장 후 '저장 완료: [파일목록]' 형식으로 요약\n\n"
+            "■ 경로 규칙\n"
+            "• Python 프로젝트: src/main.py, src/models.py, requirements.txt\n"
+            "• FastAPI: src/main.py, src/routers/, requirements.txt\n"
+            "• 절대경로 사용 금지 — 항상 상대경로\n"
+        )
+        messages = _build_messages(worker_system, enriched)
+
+        for _ in range(10):
+            if await _check_control(state, worker_name):
+                break
+            try:
+                resp = await safe_ainvoke(model, messages, config=RunnableConfig(callbacks=[]))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                result = f"[재실행 오류] {e}"
+                break
+
+            messages.append(resp)
+            if not resp.tool_calls:
+                result = resp.content or ""
+                if result:
+                    await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
+                break
+
+            for tc in resp.tool_calls:
+                tool_name = tc["name"]
+                tool_args = tc["args"]
+                tool_id   = tc["id"]
+                await ws.send_json({
+                    "type": "tool_call", "aiName": worker_name,
+                    "tool": tool_name, "args": tool_args,
+                    "message": f"🔧 {tool_name}({', '.join(f'{k}={repr(v)[:60]}' for k, v in tool_args.items())})",
+                })
+                tool_result = (
+                    await tool_map[tool_name].ainvoke(tool_args)
+                    if tool_name in tool_map
+                    else f"[오류] 알 수 없는 도구: {tool_name}"
+                )
+                messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_id))
     else:
-        handler = ProgressWSStreamHandler(ws, worker_name)
-        cfg = RunnableConfig(callbacks=[handler])
         model = get_lc_model(provider_key, streaming=True)
         try:
             resp = await safe_ainvoke(model, _build_messages("", enriched), config=cfg)
@@ -752,6 +1031,7 @@ def route_after_plan(state: GraphState):
             **state,
             "current_worker_name": st["worker_name"],
             "current_task_text":   st["task"],
+            "current_task_db_id":  st.get("db_task_id"),   # 마일스톤 태스크 추적
         })
         for st in state["subtasks"]
     ]

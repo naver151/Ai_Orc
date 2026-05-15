@@ -9,7 +9,9 @@
       "PowerShell($base = \"C:\\\\Users\\\\USER\\\\OneDrive\\\\文档\\\\GitHub\\\\Ai_Orc\\\\Ai_Orc\\\\Server\\\\backend\"; Get-ChildItem \"$base\" -Directory)",
       "Bash(python -m py_compile Server/backend/app/ai/lc_providers.py)",
       "Bash(python -m py_compile Server/backend/app/ai/graph_runner.py)",
-      "Bash(python -m py_compile Server/backend/app/ai/agent_runner.py)"
+      "Bash(python -m py_compile Server/backend/app/ai/agent_runner.py)",
+      "Bash(python -c ' *)",
+      "Bash(pip install *)"
     ]
   }
 }

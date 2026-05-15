@@ -725,21 +725,51 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px;
+  gap: 12px;
+  padding: 0 16px;
   background: #111118;
   border-bottom: 1px solid rgba(255,255,255,0.07);
+  position: relative;   /* 드롭다운 z-index 기준점 */
+  z-index: 100;         /* 드롭다운이 아래 콘텐츠 위에 뜨도록 */
 }
 
 .wsFullHeaderLeft {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .wsFullHeaderRight {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 마일스톤 / 세션 패널 토글 버튼 */
+.panelToggleBtn {
+  width: 30px;
+  height: 30px;
+  background: #1e1e2e;
+  border: 1px solid #2a2a3e;
+  border-radius: 7px;
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  line-height: 1;
+}
+.panelToggleBtn:hover {
+  background: #2a2a3e;
+  border-color: #444;
+}
+.panelToggleBtnActive {
+  background: #7c6dfa22 !important;
+  border-color: #7c6dfa66 !important;
+  box-shadow: 0 0 0 1px #7c6dfa33;
 }
 
 .wsFullDot {
@@ -781,6 +811,9 @@
   flex: 1;
   position: relative;
   overflow: hidden;
+  display: flex;      /* AgentWorkspace + MilestoneBoard/SessionPanel 나란히 */
+  flex-direction: row;
+  align-items: stretch;
 }
 
 /* ── 플로팅 챗 버튼 ─────────────────────────────────────── */
@@ -910,6 +943,30 @@
 .chatModal .inputArea {
   padding: 10px 12px;
   border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+/* ── 워크스페이스 바로 열기 버튼 ────────────────────────── */
+.workspaceBtn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  background: var(--accent-bg);
+  border: 1px solid rgba(124,109,250,0.3);
+  border-radius: var(--radius-sm);
+  color: var(--accent2);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, transform 0.12s;
+  flex-shrink: 0;
+}
+.workspaceBtn:hover {
+  background: rgba(124,109,250,0.18);
+  border-color: rgba(124,109,250,0.5);
+  transform: translateY(-1px);
 }
 
 /* ── 테마 토글 버튼 ─────────────────────────────────────── */
