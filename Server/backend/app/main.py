@@ -6,13 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import Base, engine
 from app.routes.workspace import router as workspace_router   # project + 파일시스템 통합
-from app.routes.agent import router as agent_router
-from app.routes.task import router as task_router
-from app.routes.orchestrator import router as orchestrator_router
-from app.routes.upload import router as upload_router
 from app.routes.orch_logs import router as orch_logs_router
 from app.routes.chat import router as chat_router
-from app.routes.orchestrate_stream import router as orchestrate_stream_router
 from app.routes.performance import router as performance_router
 from app.connection_manager import connection_manager
 from app.ai.agent_runner import agent_manager
@@ -28,8 +23,15 @@ def _run_migrations() -> None:
         # projects 테이블 — workspace_path, created_at 컬럼 추가
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS workspace_path VARCHAR;",
         "ALTER TABLE projects ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();",
-        # workspace_files — updated_at onupdate 트리거 컬럼 보장
+        # workspace_files — updated_at, task_id 컬럼 보장
         "ALTER TABLE workspace_files ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();",
+        "ALTER TABLE workspace_files ADD COLUMN IF NOT EXISTS task_id INTEGER;",
+        # project_tasks — result_files JSON 컬럼 보장
+        "ALTER TABLE project_tasks ADD COLUMN IF NOT EXISTS result_files JSONB DEFAULT '[]'::jsonb;",
+        # project_sessions — tasks_done JSON 컬럼 보장
+        "ALTER TABLE project_sessions ADD COLUMN IF NOT EXISTS tasks_done JSONB DEFAULT '[]'::jsonb;",
+        # orchestration_logs — 토큰/비용 추적 컬럼
+        "ALTER TABLE orchestration_logs ADD COLUMN IF NOT EXISTS token_usage JSONB;",
     ]
     with engine.connect() as conn:
         for sql in migrations:
@@ -58,13 +60,8 @@ app.add_middleware(
 
 # ── REST 라우터 ───────────────────────────────────────────────
 app.include_router(workspace_router)   # /projects/ + /projects/{id}/workspace/
-app.include_router(agent_router)
-app.include_router(task_router)
-app.include_router(orchestrator_router)
-app.include_router(upload_router)
 app.include_router(orch_logs_router)
 app.include_router(chat_router)
-app.include_router(orchestrate_stream_router)
 app.include_router(performance_router)
 
 

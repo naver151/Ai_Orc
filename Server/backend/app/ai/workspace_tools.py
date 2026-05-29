@@ -38,11 +38,13 @@ class WorkspaceTools:
         project_id: int,
         ws: "WebSocket",
         agent_name: str,
+        task_id: int | None = None,
     ) -> None:
         self.root       = Path(workspace_path).resolve()
         self.project_id = project_id
         self.ws         = ws
         self.agent_name = agent_name
+        self.task_id    = task_id   # 담당 ProjectTask ID (파일 추적용)
 
         # 워크스페이스 루트 보장
         self.root.mkdir(parents=True, exist_ok=True)
@@ -266,11 +268,12 @@ class WorkspaceTools:
     # ── DB 저장 ────────────────────────────────────────────────────────────
 
     async def _save_file_meta(self, path: str) -> None:
-        """WorkspaceFile 레코드 upsert (생성 또는 updated_at 갱신)."""
+        """WorkspaceFile 레코드 upsert + ProjectTask.result_files 갱신."""
         try:
             from app.db import SessionLocal
-            from app.models import WorkspaceFile
+            from app.models import WorkspaceFile, ProjectTask
             from datetime import datetime, timezone
+            import json as _json
 
             db = SessionLocal()
             existing = (
@@ -285,12 +288,31 @@ class WorkspaceTools:
             if existing:
                 existing.updated_at  = now
                 existing.created_by  = self.agent_name
+                if self.task_id and not existing.task_id:
+                    existing.task_id = self.task_id
             else:
                 db.add(WorkspaceFile(
                     project_id = self.project_id,
                     path       = path,
                     created_by = self.agent_name,
+                    task_id    = self.task_id,
                 ))
+
+            # ProjectTask.result_files 갱신 (담당 태스크가 있을 때만)
+            if self.task_id:
+                task = db.query(ProjectTask).filter(
+                    ProjectTask.id == self.task_id,
+                    ProjectTask.project_id == self.project_id,
+                ).first()
+                if task:
+                    try:
+                        files: list = _json.loads(task.result_files) if task.result_files else []
+                    except Exception:
+                        files = []
+                    if path not in files:
+                        files.append(path)
+                        task.result_files = _json.dumps(files, ensure_ascii=False)
+
             db.commit()
         except Exception:
             pass

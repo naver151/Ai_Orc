@@ -4,7 +4,7 @@ import AgentWorkspace from './AgentWorkspace'
 import ProjectSelector from './ProjectSelector'
 import MilestoneBoard from './MilestoneBoard'
 import SessionPanel   from './SessionPanel'
-import { sendChatMessage, generateChatResponse, analyzeRequest, detectProjectIntent } from '../utils/agentManager'
+import { sendChatMessage, analyzeRequest, detectProjectIntent } from '../utils/agentManager'
 
 
 // ── 채팅 저장소 헬퍼 ─────────────────────────────────────────
@@ -292,7 +292,7 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
       } else if (errMsg.includes('fetch') || errMsg.includes('Failed') || errMsg.includes('NetworkError') || errMsg.includes('ECONNREFUSED')) {
         reply = '⚠️ 백엔드 서버에 연결할 수 없습니다.\nVSCode에서 F5를 눌러 서버를 먼저 실행해주세요.'
       } else {
-        reply = generateChatResponse(text)
+        reply = '⚠️ 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
       }
       setMessages(prev => {
         if (prev.some(m => m.id === aiId)) {
@@ -339,7 +339,7 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
       } else if (errMsg.includes('fetch') || errMsg.includes('Failed') || errMsg.includes('ECONNREFUSED')) {
         reply = '⚠️ 백엔드 서버에 연결할 수 없습니다.'
       } else {
-        reply = generateChatResponse(text)
+        reply = '⚠️ 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
       }
       setMessages(prev => {
         if (prev.some(m => m.id === aiId)) {

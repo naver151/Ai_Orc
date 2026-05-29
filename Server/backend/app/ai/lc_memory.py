@@ -39,6 +39,10 @@ def _get_embeddings():
         except Exception:
             pass
     # 최후 폴백: 가짜 임베딩 (의미 검색 불가)
+    print(
+        "[경고] 임베딩 API 키 없음 (GITHUB_TOKEN / OPENAI_API_KEY) — "
+        "FakeEmbeddings 사용. RAG 유사도 검색이 비활성화됩니다."
+    )
     from langchain_core.embeddings import FakeEmbeddings
     return FakeEmbeddings(size=1536)
 

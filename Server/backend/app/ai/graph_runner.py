@@ -26,13 +26,33 @@ _SCORE_RE = re.compile(r"⭐\s*점수\s*:\s*(\d+)\s*/\s*10", re.IGNORECASE)
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
-from langgraph.types import Send
 
 from app.ai.graph_state import GraphState, SubTask
 from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke
 from app.ai.lc_memory import save_agent_memory, build_rag_context
 
 _ORCHESTRATE_RE = re.compile(r"<ORCHESTRATE>(.*?)</ORCHESTRATE>", re.DOTALL)
+
+
+class _LockedWS:
+    """
+    WebSocket 동시 쓰기 보호 래퍼.
+    asyncio.gather()로 여러 코루틴이 병렬 실행될 때
+    send_json 프레임 충돌 / RuntimeError 방지.
+    send_json만 Lock으로 직렬화하고, 나머지 속성은 원본 ws에 위임.
+    """
+    __slots__ = ("_ws", "_lock")
+
+    def __init__(self, ws, lock: asyncio.Lock) -> None:
+        self._ws   = ws
+        self._lock = lock
+
+    async def send_json(self, data) -> None:
+        async with self._lock:
+            await self._ws.send_json(data)
+
+    def __getattr__(self, name):
+        return getattr(self._ws, name)
 
 # ── 적응형 분배 상수 / 유틸 ──────────────────────────────────────────────────
 
@@ -392,6 +412,7 @@ async def plan_node(state: GraphState) -> dict:
             model,
             _build_messages(system, enriched),
             config=RunnableConfig(callbacks=[]),
+            provider=provider_key,
         )
         plan_text = resp.content
     except asyncio.CancelledError:
@@ -490,6 +511,98 @@ async def plan_node(state: GraphState) -> dict:
     }
 
 
+# ── 도구 바인딩 실행 루프 헬퍼 ───────────────────────────────────────────────
+# worker_node 와 retry_node 양쪽에서 공유. 중복 제거.
+
+_WORKER_SYSTEM = (
+    "당신은 프로젝트 워크스페이스에 실제 파일을 생성하는 AI 개발자입니다.\n\n"
+    "⚠️ 절대 규칙 — 반드시 지켜야 합니다:\n"
+    "• 코드를 텍스트나 마크다운(``` 블록)으로 출력하면 안 됩니다.\n"
+    "• 모든 코드·설정·문서는 반드시 write_file 도구를 호출해 파일로 저장하세요.\n"
+    "• 파일을 저장하지 않으면 작업 실패로 간주됩니다.\n\n"
+    "■ 작업 순서\n"
+    "1. list_files 로 현재 파일 목록 확인\n"
+    "2. 필요한 파일마다 write_file 호출 (경로는 워크스페이스 루트 기준 상대경로)\n"
+    "   예: write_file(path='src/main.py', content='...')\n"
+    "3. 모든 파일 저장 후 '저장 완료: [파일목록]' 형식으로 요약\n\n"
+    "■ 경로 규칙\n"
+    "• Python 프로젝트: src/main.py, src/models.py, requirements.txt\n"
+    "• FastAPI: src/main.py, src/routers/, requirements.txt\n"
+    "• 절대경로 사용 금지 — 항상 상대경로\n"
+)
+
+
+async def _run_tool_loop(
+    state:      "GraphState",
+    ws,
+    agent_name: str,
+    messages:   list,
+    tool_map:   dict,
+    model,
+    step_label: str = "AI 응답 대기 중",
+    provider:   str = "github",
+) -> str:
+    """
+    도구 바인딩 LLM 실행 루프 (최대 10회).
+    tool_calls 가 없거나 kill 신호 수신 시 종료.
+    Returns: 최종 텍스트 결과. 오류 시 '[오류] ...' 형태.
+    """
+    from langchain_core.messages import ToolMessage
+
+    result = ""
+    for loop_i in range(10):
+        if await _check_control(state, agent_name):
+            break
+
+        await ws.send_json({
+            "type":    "log",
+            "aiName":  agent_name,
+            "message": f"⏳ {step_label} (단계 {loop_i + 1})...\n",
+        })
+
+        try:
+            resp = await safe_ainvoke(
+                model, messages,
+                config=RunnableConfig(callbacks=[]),
+                provider=provider,
+            )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            result = f"[오류] {e}"
+            await ws.send_json({"type": "log", "aiName": agent_name, "message": result})
+            break
+
+        messages.append(resp)
+
+        if not resp.tool_calls:
+            result = resp.content or ""
+            if result:
+                await ws.send_json({"type": "log", "aiName": agent_name, "message": result})
+            break
+
+        # 도구 실행
+        for tc in resp.tool_calls:
+            tool_name = tc["name"]
+            tool_args = tc["args"]
+            tool_id   = tc["id"]
+
+            await ws.send_json({
+                "type":    "tool_call",
+                "aiName":  agent_name,
+                "tool":    tool_name,
+                "args":    tool_args,
+                "message": f"🔧 {tool_name}({', '.join(f'{k}={repr(v)[:60]}' for k, v in tool_args.items())})",
+            })
+
+            tool_result = (
+                await tool_map[tool_name].ainvoke(tool_args)
+                if tool_name in tool_map
+                else f"[오류] 알 수 없는 도구: {tool_name}"
+            )
+            messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_id))
+
+    return result
 
 
 async def worker_node(state: GraphState) -> dict:
@@ -515,20 +628,8 @@ async def worker_node(state: GraphState) -> dict:
             _update_task_status_sync, project_id, db_task_id, "in_progress", worker_name
         )
 
-    # 이미 완료된 동료 결과를 컨텍스트로 주입 (공유 화이트보드)
-    peer_context = ""
-    existing = state.get("worker_results", {})
-    if existing:
-        peer_context = "\n\n[동료 팀원 진행 결과 참고]\n" + "\n".join(
-            f"- {name}: {result[:300]}..." if len(result) > 300 else f"- {name}: {result}"
-            for name, result in existing.items()
-            if result.strip()
-        )
-
     # 메모리 주입
     enriched = _inject_memory(worker_name, task_text)
-    if peer_context:
-        enriched += peer_context
 
     await ws.send_json({"type": "current_task", "aiName": worker_name, "task": task_text})
 
@@ -544,93 +645,30 @@ async def worker_node(state: GraphState) -> dict:
     if workspace_path and project_id:
         # ── 도구 바인딩 모드: LLM이 파일 읽기/쓰기/실행 가능 ──────────────
         from app.ai.workspace_tools import WorkspaceTools
-        from langchain_core.messages import ToolMessage
 
         ws_tools = WorkspaceTools(
             workspace_path=workspace_path,
             project_id=project_id,
             ws=ws,
             agent_name=worker_name,
+            task_id=db_task_id,
         )
-        tools     = ws_tools.get_tools()
-        tool_map  = {t.name: t for t in tools}
-        model     = get_lc_model(provider_key, streaming=False).bind_tools(tools)
+        tools    = ws_tools.get_tools()
+        tool_map = {t.name: t for t in tools}
+        model    = get_lc_model(provider_key, streaming=False).bind_tools(tools)
+        messages = _build_messages(_WORKER_SYSTEM, enriched)
 
-        worker_system = (
-            "당신은 프로젝트 워크스페이스에 실제 파일을 생성하는 AI 개발자입니다.\n\n"
-            "⚠️ 절대 규칙 — 반드시 지켜야 합니다:\n"
-            "• 코드를 텍스트나 마크다운(``` 블록)으로 출력하면 안 됩니다.\n"
-            "• 모든 코드·설정·문서는 반드시 write_file 도구를 호출해 파일로 저장하세요.\n"
-            "• 파일을 저장하지 않으면 작업 실패로 간주됩니다.\n\n"
-            "■ 작업 순서\n"
-            "1. list_files 로 현재 파일 목록 확인\n"
-            "2. 필요한 파일마다 write_file 호출 (경로는 워크스페이스 루트 기준 상대경로)\n"
-            "   예: write_file(path='src/main.py', content='...')\n"
-            "3. 모든 파일 저장 후 '저장 완료: [파일목록]' 형식으로 요약\n\n"
-            "■ 경로 규칙\n"
-            "• Python 프로젝트: src/main.py, src/models.py, requirements.txt\n"
-            "• FastAPI: src/main.py, src/routers/, requirements.txt\n"
-            "• 절대경로 사용 금지 — 항상 상대경로\n"
+        result = await _run_tool_loop(
+            state, ws, worker_name, messages, tool_map, model, provider=provider_key
         )
-        messages  = _build_messages(worker_system, enriched)
-
-        # 도구 호출 루프 (최대 10회 반복)
-        for loop_i in range(10):
-            if await _check_control(state, worker_name):
-                break
-            # 대기 중 상태 알림
-            await ws.send_json({
-                "type":    "log",
-                "aiName":  worker_name,
-                "message": f"⏳ AI 응답 대기 중 (단계 {loop_i + 1})...\n",
-            })
-            try:
-                resp = await safe_ainvoke(model, messages, config=RunnableConfig(callbacks=[]))
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                result = f"[오류] {e}"
-                await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
-                break
-
-            messages.append(resp)
-
-            if not resp.tool_calls:
-                # 도구 호출 없음 → 최종 답변
-                result = resp.content or ""
-                if result:
-                    await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
-                break
-
-            # 도구 실행
-            for tc in resp.tool_calls:
-                tool_name = tc["name"]
-                tool_args = tc["args"]
-                tool_id   = tc["id"]
-
-                await ws.send_json({
-                    "type":    "tool_call",
-                    "aiName":  worker_name,
-                    "tool":    tool_name,
-                    "args":    tool_args,
-                    "message": f"🔧 {tool_name}({', '.join(f'{k}={repr(v)[:60]}' for k, v in tool_args.items())})",
-                })
-
-                if tool_name in tool_map:
-                    try:
-                        tool_result = await tool_map[tool_name].ainvoke(tool_args)
-                    except Exception as e:
-                        tool_result = f"[도구 오류] {e}"
-                else:
-                    tool_result = f"[오류] 알 수 없는 도구: {tool_name}"
-
-                messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_id))
 
     else:
         # ── 기본 모드: 도구 없이 텍스트 생성 (하위 호환) ─────────────────
         model = get_lc_model(provider_key, streaming=True)
         try:
-            resp = await safe_ainvoke(model, _build_messages("", enriched), config=cfg)
+            resp = await safe_ainvoke(
+                model, _build_messages("", enriched), config=cfg, provider=provider_key
+            )
             result = resp.content
         except asyncio.CancelledError:
             result = ""
@@ -659,6 +697,40 @@ async def worker_node(state: GraphState) -> dict:
     await ws.send_json({"type": "current_task", "aiName": worker_name, "task": ""})
 
     return {"worker_results": {worker_name: result}}
+
+
+async def workers_node(state: GraphState) -> dict:
+    """
+    모든 워커를 asyncio.gather()로 진짜 병렬 실행.
+    LangGraph Send API는 WebSocket 등 직렬화 불가 객체가 포함된 상태에서
+    순차 실행으로 폴백하기 때문에 이 방식으로 대체.
+    _LockedWS로 WebSocket 동시 쓰기 충돌을 방지한다.
+    """
+    subtasks = state.get("subtasks", [])
+    if not subtasks:
+        return {"worker_results": {}}
+
+    # 병렬 실행 중 WebSocket 동시 쓰기 충돌 방지
+    ws_lock = asyncio.Lock()
+    safe_ws = _LockedWS(state["websocket"], ws_lock)
+
+    async def _run_one(st: SubTask) -> dict:
+        local_state = {
+            **state,
+            "websocket":           safe_ws,  # locked ws 주입
+            "current_worker_name": st["worker_name"],
+            "current_task_text":   st["task"],
+            "current_task_db_id":  st.get("db_task_id"),
+            "worker_results":      {},
+        }
+        return (await worker_node(local_state))["worker_results"]
+
+    results_list = await asyncio.gather(*[_run_one(st) for st in subtasks])
+
+    merged: dict[str, str] = {}
+    for r in results_list:
+        merged.update(r)
+    return {"worker_results": merged}
 
 
 async def synthesize_node(state: GraphState) -> dict:
@@ -704,9 +776,8 @@ async def synthesize_node(state: GraphState) -> dict:
     await ws.send_json({"type": "orchestration_synthesis", "aiName": manager})
     await ws.send_json({"type": "current_task", "aiName": manager, "task": "결과 종합 중..."})
 
-    # 시스템 프롬프트
-    worker_list = "\n".join(f"- 팀원 {i+1}: {n}" for i, n in enumerate(state["worker_names"]))
-    system = _MANAGER_SYSTEM.format(worker_list=worker_list, project_context="")
+    # 종합 전용 시스템 프롬프트 (ORCHESTRATE 형식 유도 없음)
+    system = _SYNTHESIS_SYSTEM
 
     # 스트리밍
     handler = ProgressWSStreamHandler(ws, manager)
@@ -715,7 +786,9 @@ async def synthesize_node(state: GraphState) -> dict:
 
     synthesis = ""
     try:
-        resp = await safe_ainvoke(model, _build_messages(system, synthesis_prompt), config=cfg)
+        resp = await safe_ainvoke(
+            model, _build_messages(system, synthesis_prompt), config=cfg, provider=provider_key
+        )
         synthesis = resp.content
     except asyncio.CancelledError:
         synthesis = ""
@@ -735,6 +808,17 @@ async def synthesize_node(state: GraphState) -> dict:
     return {"final_synthesis": synthesis}
 
 
+_SYNTHESIS_SYSTEM = (
+    "당신은 AI 팀의 총괄 관리자입니다.\n"
+    "팀원들의 작업 결과를 통합하여 사용자에게 완성도 높은 최종 답변을 작성하세요.\n\n"
+    "■ 작성 원칙\n"
+    "• 팀원 결과를 그대로 나열하지 말고, 논리적으로 연결해 하나의 완성된 답변으로 만드세요.\n"
+    "• 사용자 요청을 다시 읽고, 그에 정확히 답변하는 구조로 작성하세요.\n"
+    "• 중복 내용은 제거하고, 상충되는 내용은 더 나은 쪽을 선택하세요.\n"
+    "• 코드가 있으면 코드 블록으로, 문서는 마크다운으로 정리하세요.\n"
+    "• <ORCHESTRATE> 형식은 절대 사용하지 마세요. 일반 텍스트로 답변하세요.\n"
+)
+
 _REVIEWER_SYSTEM = (
     "당신은 AI 팀의 전문 검토자입니다.\n"
     "팀원의 작업 결과물을 검토하고 명확하고 건설적인 피드백을 제공합니다.\n"
@@ -750,31 +834,32 @@ _REVIEWER_SYSTEM = (
 async def review_node(state: GraphState) -> dict:
     """
     교차 리뷰: 워커가 쓴 모델과 다른 모델로 각 결과물 검토.
-    review_scores 딕셔너리에 점수를 누적하여 user_review_node로 전달.
+    asyncio.gather()로 모든 워커 리뷰를 병렬 실행.
+    _LockedWS로 WebSocket 동시 쓰기 충돌을 방지한다.
     """
-    ws      = state["websocket"]
+    _raw_ws = state["websocket"]
     manager = state["manager_name"]
     results = state.get("worker_results", {})
 
     if not results:
         return {"review_feedback": "", "review_scores": {}}
 
+    # 병렬 리뷰 중 WebSocket 동시 쓰기 충돌 방지
+    ws_lock = asyncio.Lock()
+    ws      = _LockedWS(_raw_ws, ws_lock)  # 이후 closure들이 locked ws 참조
+
     await ws.send_json({"type": "review_start", "aiName": manager})
 
-    all_feedback: list[str] = []
-    review_scores: dict[str, int | None] = {}
-
-    for worker_name, result in results.items():
+    async def _review_one(worker_name: str, result: str) -> tuple:
+        """단일 워커 결과 리뷰. (worker_name, score, feedback, reviewer_key) 반환."""
         if not result or not result.strip():
-            review_scores[worker_name] = None
-            continue
+            return worker_name, None, "", ""
 
         if await _check_control(state, manager):
-            break
+            return worker_name, None, "", ""
 
-        # ── 교차 리뷰: 워커와 다른 모델 선택 ──────────────────
-        worker_provider  = state["provider_map"].get(worker_name, "github")
-        reviewer_key     = _get_reviewer_key(worker_provider)
+        worker_provider = state["provider_map"].get(worker_name, "github")
+        reviewer_key    = _get_reviewer_key(worker_provider)
 
         prompt = (
             f"원래 요청: {state['user_prompt']}\n\n"
@@ -782,31 +867,31 @@ async def review_node(state: GraphState) -> dict:
             "위 결과물을 검토하고 형식에 맞춰 피드백해주세요."
         )
 
+        await ws.send_json({
+            "type":          "review_begin",
+            "aiName":        worker_name,
+            "reviewerModel": reviewer_key.upper(),
+        })
+
         handler = ProgressWSStreamHandler(ws, worker_name)
         cfg     = RunnableConfig(callbacks=[handler])
         model   = get_lc_model(reviewer_key, streaming=True)
 
-        await ws.send_json({
-            "type":         "review_begin",
-            "aiName":       worker_name,
-            "reviewerModel": reviewer_key.upper(),
-        })
-
         feedback = ""
         try:
-            resp     = await safe_ainvoke(
-                model, _build_messages(_REVIEWER_SYSTEM, prompt), config=cfg
+            resp = await safe_ainvoke(
+                model, _build_messages(_REVIEWER_SYSTEM, prompt), config=cfg,
+                provider=reviewer_key,
             )
             feedback = resp.content
         except asyncio.CancelledError:
-            break
+            return worker_name, None, "", reviewer_key
         except Exception as e:
             feedback = f"[검토 오류] {e}"
             await ws.send_json({"type": "log", "aiName": worker_name, "message": feedback})
 
         score_match = _SCORE_RE.search(feedback)
         score = int(score_match.group(1)) if score_match else None
-        review_scores[worker_name] = score
 
         await ws.send_json({
             "type":          "review_done",
@@ -816,23 +901,37 @@ async def review_node(state: GraphState) -> dict:
             "reviewerModel": reviewer_key.upper(),
         })
 
-        all_feedback.append(f"[{worker_name} 검토 — {reviewer_key.upper()}]\n{feedback}")
+        return worker_name, score, feedback, reviewer_key
 
-    # ── 점수 DB 저장 (적응형 분배용) ──────────────────────────
+    # ── 모든 리뷰 병렬 실행 ──────────────────────────────────────
+    review_tuples = await asyncio.gather(*[
+        _review_one(name, res) for name, res in results.items()
+    ])
+
+    all_feedback:  list[str]            = []
+    review_scores: dict[str, int|None]  = {}
+    for worker_name, score, feedback, reviewer_key in review_tuples:
+        review_scores[worker_name] = score
+        if feedback:
+            all_feedback.append(f"[{worker_name} 검토 — {reviewer_key.upper()}]\n{feedback}")
+
+    # ── 점수 DB 저장 (적응형 분배용) — 병렬 저장 ──────────────
     subtask_map: dict[str, str] = {
         st["worker_name"]: st.get("task_type", "general")
         for st in state.get("subtasks", [])
     }
-    for worker_name, score in review_scores.items():
-        if score is not None:
-            worker_provider = state["provider_map"].get(worker_name, "github")
-            task_type       = subtask_map.get(worker_name, "general")
-            try:
-                await asyncio.to_thread(
-                    _save_performance_sync, task_type, worker_provider, score
-                )
-            except Exception:
-                pass
+    save_coros = [
+        asyncio.to_thread(
+            _save_performance_sync,
+            subtask_map.get(wn, "general"),
+            state["provider_map"].get(wn, "github"),
+            sc,
+        )
+        for wn, sc in review_scores.items()
+        if sc is not None
+    ]
+    if save_coros:
+        await asyncio.gather(*save_coros)
 
     return {
         "review_feedback": "\n\n".join(all_feedback),
@@ -908,11 +1007,12 @@ async def retry_node(state: GraphState) -> dict:
     worker_node와 동일하지만 user_feedback를 컨텍스트에 주입.
     review_node를 거치지 않고 synthesize_node로 직행.
     """
-    ws          = state["websocket"]
-    worker_name = state["current_worker_name"]
-    task_text   = state["current_task_text"]
+    ws           = state["websocket"]
+    worker_name  = state["current_worker_name"]
+    task_text    = state["current_task_text"]
     provider_key = state["provider_map"].get(worker_name, "github")
-    user_fb     = state.get("user_feedback", "")
+    user_fb      = state.get("user_feedback", "")
+    db_task_id   = state.get("current_task_db_id")
 
     if await _check_control(state, worker_name):
         return {"worker_results": {worker_name: ""}}
@@ -945,73 +1045,30 @@ async def retry_node(state: GraphState) -> dict:
     if workspace_path and project_id:
         # 워크스페이스 모드 재실행 (도구 바인딩)
         from app.ai.workspace_tools import WorkspaceTools
-        from langchain_core.messages import ToolMessage
 
         ws_tools = WorkspaceTools(
             workspace_path=workspace_path,
             project_id=project_id,
             ws=ws,
             agent_name=worker_name,
+            task_id=db_task_id,
         )
         tools    = ws_tools.get_tools()
         tool_map = {t.name: t for t in tools}
         model    = get_lc_model(provider_key, streaming=False).bind_tools(tools)
+        messages = _build_messages(_WORKER_SYSTEM, enriched)
 
-        worker_system = (
-            "당신은 프로젝트 워크스페이스에 실제 파일을 생성하는 AI 개발자입니다.\n\n"
-            "⚠️ 절대 규칙 — 반드시 지켜야 합니다:\n"
-            "• 코드를 텍스트나 마크다운(``` 블록)으로 출력하면 안 됩니다.\n"
-            "• 모든 코드·설정·문서는 반드시 write_file 도구를 호출해 파일로 저장하세요.\n"
-            "• 파일을 저장하지 않으면 작업 실패로 간주됩니다.\n\n"
-            "■ 작업 순서\n"
-            "1. list_files 로 현재 파일 목록 확인\n"
-            "2. 필요한 파일마다 write_file 호출 (경로는 워크스페이스 루트 기준 상대경로)\n"
-            "   예: write_file(path='src/main.py', content='...')\n"
-            "3. 모든 파일 저장 후 '저장 완료: [파일목록]' 형식으로 요약\n\n"
-            "■ 경로 규칙\n"
-            "• Python 프로젝트: src/main.py, src/models.py, requirements.txt\n"
-            "• FastAPI: src/main.py, src/routers/, requirements.txt\n"
-            "• 절대경로 사용 금지 — 항상 상대경로\n"
+        result = await _run_tool_loop(
+            state, ws, worker_name, messages, tool_map, model,
+            step_label="재실행 AI 응답 대기 중",
+            provider=provider_key,
         )
-        messages = _build_messages(worker_system, enriched)
-
-        for _ in range(10):
-            if await _check_control(state, worker_name):
-                break
-            try:
-                resp = await safe_ainvoke(model, messages, config=RunnableConfig(callbacks=[]))
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                result = f"[재실행 오류] {e}"
-                break
-
-            messages.append(resp)
-            if not resp.tool_calls:
-                result = resp.content or ""
-                if result:
-                    await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
-                break
-
-            for tc in resp.tool_calls:
-                tool_name = tc["name"]
-                tool_args = tc["args"]
-                tool_id   = tc["id"]
-                await ws.send_json({
-                    "type": "tool_call", "aiName": worker_name,
-                    "tool": tool_name, "args": tool_args,
-                    "message": f"🔧 {tool_name}({', '.join(f'{k}={repr(v)[:60]}' for k, v in tool_args.items())})",
-                })
-                tool_result = (
-                    await tool_map[tool_name].ainvoke(tool_args)
-                    if tool_name in tool_map
-                    else f"[오류] 알 수 없는 도구: {tool_name}"
-                )
-                messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_id))
     else:
         model = get_lc_model(provider_key, streaming=True)
         try:
-            resp = await safe_ainvoke(model, _build_messages("", enriched), config=cfg)
+            resp = await safe_ainvoke(
+                model, _build_messages("", enriched), config=cfg, provider=provider_key
+            )
             result = resp.content
         except Exception as e:
             result = f"[재실행 오류] {e}"
@@ -1020,42 +1077,56 @@ async def retry_node(state: GraphState) -> dict:
     return {"worker_results": {worker_name: result}}
 
 
+async def retry_workers_node(state: GraphState) -> dict:
+    """
+    사용자 피드백 반영 재실행 워커들을 asyncio.gather()로 병렬 실행.
+    _LockedWS로 WebSocket 동시 쓰기 충돌을 방지한다.
+    """
+    retry_names = state.get("retry_worker_names", [])
+    subtask_map = {st["worker_name"]: st["task"] for st in state.get("subtasks", [])}
+
+    # 병렬 실행 중 WebSocket 동시 쓰기 충돌 방지
+    ws_lock = asyncio.Lock()
+    safe_ws = _LockedWS(state["websocket"], ws_lock)
+
+    async def _run_one(name: str) -> dict:
+        local_state = {
+            **state,
+            "websocket":           safe_ws,  # locked ws 주입
+            "current_worker_name": name,
+            "current_task_text":   subtask_map.get(name, ""),
+            "current_task_db_id":  None,
+            "worker_results":      {},
+        }
+        return (await retry_node(local_state))["worker_results"]
+
+    results_list = await asyncio.gather(*[_run_one(name) for name in retry_names])
+
+    merged: dict[str, str] = {}
+    for r in results_list:
+        merged.update(r)
+    return {"worker_results": merged}
+
+
 # ── 라우팅 ────────────────────────────────────────────────────────────────────
 
 def route_after_plan(state: GraphState):
-    """plan_node 이후: 직접 답변 → END, 분배 → worker_node 병렬 실행."""
+    """plan_node 이후: 직접 답변 → END, 분배 → workers_node (asyncio.gather 병렬)."""
     if state.get("is_direct"):
         return END
-    return [
-        Send("worker_node", {
-            **state,
-            "current_worker_name": st["worker_name"],
-            "current_task_text":   st["task"],
-            "current_task_db_id":  st.get("db_task_id"),   # 마일스톤 태스크 추적
-        })
-        for st in state["subtasks"]
-    ]
+    return "workers_node"
 
 
 def route_after_user_review(state: GraphState):
     """
     user_review_node 이후 라우팅.
-    - 재실행 필요 워커 있음 → retry_node 병렬 실행
+    - 재실행 필요 워커 있음 → retry_workers_node (asyncio.gather 병렬)
     - 없음 → synthesize_node
     """
     retry_workers = state.get("retry_worker_names", [])
     if not retry_workers:
         return "synthesize_node"
-
-    subtask_map = {st["worker_name"]: st["task"] for st in state.get("subtasks", [])}
-    return [
-        Send("retry_node", {
-            **state,
-            "current_worker_name": name,
-            "current_task_text":   subtask_map.get(name, ""),
-        })
-        for name in retry_workers
-    ]
+    return "retry_workers_node"
 
 
 # ── 그래프 빌드 ───────────────────────────────────────────────────────────────
@@ -1063,20 +1134,21 @@ def route_after_user_review(state: GraphState):
 def build_graph():
     g = StateGraph(GraphState)
 
-    g.add_node("plan_node",        plan_node)
-    g.add_node("worker_node",      worker_node)
-    g.add_node("review_node",      review_node)        # 교차 AI 리뷰
-    g.add_node("user_review_node", user_review_node)   # 사용자 교차검증 (15초)
-    g.add_node("retry_node",       retry_node)         # 피드백 반영 재실행
-    g.add_node("synthesize_node",  synthesize_node)
+    # worker_node / retry_node 는 helpers — LangGraph 노드로 직접 등록하지 않음
+    g.add_node("plan_node",          plan_node)
+    g.add_node("workers_node",       workers_node)        # asyncio.gather 병렬 워커 컨테이너
+    g.add_node("review_node",        review_node)         # asyncio.gather 병렬 교차 리뷰
+    g.add_node("user_review_node",   user_review_node)    # 사용자 교차검증 (15초)
+    g.add_node("retry_workers_node", retry_workers_node)  # asyncio.gather 병렬 재실행 컨테이너
+    g.add_node("synthesize_node",    synthesize_node)
 
-    g.add_edge(START, "plan_node")
+    g.add_edge(START,                  "plan_node")
     g.add_conditional_edges("plan_node",        route_after_plan)
-    g.add_edge("worker_node",      "review_node")
-    g.add_edge("review_node",      "user_review_node")
+    g.add_edge("workers_node",         "review_node")
+    g.add_edge("review_node",          "user_review_node")
     g.add_conditional_edges("user_review_node", route_after_user_review)
-    g.add_edge("retry_node",       "synthesize_node")
-    g.add_edge("synthesize_node",  END)
+    g.add_edge("retry_workers_node",   "synthesize_node")
+    g.add_edge("synthesize_node",      END)
 
     return g.compile()
 

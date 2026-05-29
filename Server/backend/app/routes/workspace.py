@@ -563,48 +563,8 @@ def delete_task(project_id: int, task_id: int, db: Session = Depends(get_db)):
 
 
 # ── 세션 관리 ──────────────────────────────────────────────────────────────
-
-class SessionEndBody(BaseModel):
-    summary:       str       = ""
-    files_changed: list[str] = []
-    tasks_done:    list[int] = []
-
-
-@router.post("/projects/{project_id}/sessions/start", status_code=201)
-def start_session(project_id: int, db: Session = Depends(get_db)):
-    """
-    오케스트레이션 시작 시 호출. 세션 레코드를 생성하고 session_id를 반환.
-    agent_runner.py가 이 ID를 사용해 나중에 end를 호출한다.
-    """
-    _get_project_or_404(project_id, db)
-    session = ProjectSession(project_id=project_id)
-    db.add(session)
-    db.commit()
-    db.refresh(session)
-    return {"session_id": session.id, "started_at": session.started_at.isoformat()}
-
-
-@router.patch("/projects/{project_id}/sessions/{session_id}/end")
-def end_session(
-    project_id: int,
-    session_id: int,
-    body:       SessionEndBody,
-    db:         Session = Depends(get_db),
-):
-    """세션 종료: 요약·변경 파일·완료 태스크 저장."""
-    session = db.query(ProjectSession).filter(
-        ProjectSession.id == session_id,
-        ProjectSession.project_id == project_id,
-    ).first()
-    if not session:
-        raise HTTPException(status_code=404, detail="세션 없음")
-    session.summary       = body.summary
-    session.files_changed = body.files_changed
-    session.tasks_done    = body.tasks_done
-    session.ended_at      = datetime.now(timezone.utc)
-    db.commit()
-    return {"ok": True, "session_id": session_id}
-
+# 세션 생성/종료는 agent_runner.py의 _start_session / _end_session 이 직접 DB에 기록.
+# 프론트엔드는 목록 조회(GET)만 사용.
 
 @router.get("/projects/{project_id}/sessions")
 def list_sessions(project_id: int, db: Session = Depends(get_db)):

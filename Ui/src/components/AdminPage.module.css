@@ -157,6 +157,17 @@
   align-items: center;
   gap: 8px;
 }
+.tokenBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: #1e3a2f;
+  color: #4caf82;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+}
 .ratingBadge {
   display: inline-flex;
   align-items: center;
@@ -412,3 +423,64 @@
 .star:hover, .starActive { color: #f5a623; }
 .star:hover { transform: scale(1.2); }
 .ratingDone { font-size: 12px; color: var(--teal); font-weight: 600; }
+
+/* ── 토큰 사용량 상세 박스 ── */
+.tokenBox {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tokenRow {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.tokenLabel {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 2px;
+}
+.tokenVal {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+}
+.tokenCost {
+  font-size: 18px;
+  font-weight: 800;
+  color: #4caf82;
+}
+.tokenCostNote {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: 4px;
+  font-weight: 400;
+}
+.tokenProviders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tokenProviderChip {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tokenProviderChip strong {
+  color: var(--text);
+  font-weight: 700;
+}
