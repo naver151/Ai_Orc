@@ -332,6 +332,12 @@ function LogsTab() {
             <div className={styles.logPrompt}>{log.user_prompt}</div>
             <div className={styles.logMeta}>
               <span>{formatDate(log.created_at)}</span>
+              {log.token_usage?.total_tokens > 0 && (
+                <span className={styles.tokenBadge}>
+                  {(log.token_usage.total_tokens).toLocaleString()}tok
+                  {log.token_usage.cost_usd > 0 && ` · $${log.token_usage.cost_usd.toFixed(4)}`}
+                </span>
+              )}
               {log.rating && (
                 <span className={styles.ratingBadge}>★ {log.rating}</span>
               )}
@@ -394,6 +400,39 @@ function LogsTab() {
               <div>
                 <div className={styles.sectionTitle}>최종 결과</div>
                 <div className={styles.resultBox}>{selected.synthesis_result}</div>
+              </div>
+            )}
+
+            {selected.token_usage?.total_tokens > 0 && (
+              <div>
+                <div className={styles.sectionTitle}>토큰 사용량</div>
+                <div className={styles.tokenBox}>
+                  <div className={styles.tokenRow}>
+                    <span className={styles.tokenLabel}>입력</span>
+                    <span className={styles.tokenVal}>{selected.token_usage.input_tokens.toLocaleString()} tok</span>
+                    <span className={styles.tokenLabel}>출력</span>
+                    <span className={styles.tokenVal}>{selected.token_usage.output_tokens.toLocaleString()} tok</span>
+                    <span className={styles.tokenLabel}>합계</span>
+                    <span className={styles.tokenVal}>{selected.token_usage.total_tokens.toLocaleString()} tok</span>
+                    <span className={styles.tokenLabel}>호출</span>
+                    <span className={styles.tokenVal}>{selected.token_usage.calls}회</span>
+                  </div>
+                  {selected.token_usage.cost_usd > 0 && (
+                    <div className={styles.tokenCost}>
+                      예상 비용: <strong>${selected.token_usage.cost_usd.toFixed(5)}</strong>
+                      <span className={styles.tokenCostNote}> (근사값)</span>
+                    </div>
+                  )}
+                  {selected.token_usage.by_provider && Object.keys(selected.token_usage.by_provider).length > 0 && (
+                    <div className={styles.tokenProviders}>
+                      {Object.entries(selected.token_usage.by_provider).map(([prov, data]) => (
+                        <span key={prov} className={styles.tokenProviderChip}>
+                          {prov.toUpperCase()} {(data.input + data.output).toLocaleString()}tok ({data.calls}회)
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

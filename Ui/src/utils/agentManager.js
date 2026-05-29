@@ -8,7 +8,6 @@ function _getUid() {
 // ── 백엔드 AI 채팅 스트리밍 ─────────────────────────────────
 // messages: ChatPage의 messages 배열 (role: 'user'|'ai', text: string)
 // onChunk: 글자 조각이 올 때마다 호출되는 콜백
-// returns: { isProjectRequest: boolean }
 export async function sendChatMessage(userText, messages, onChunk) {
   // ChatPage의 messages → 백엔드 형식(role: user|assistant, content) 변환
   const history = messages
@@ -30,7 +29,6 @@ export async function sendChatMessage(userText, messages, onChunk) {
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
-  let isProjectRequest = false
 
   while (true) {
     const { done, value } = await reader.read()
@@ -44,8 +42,7 @@ export async function sendChatMessage(userText, messages, onChunk) {
       if (!line.startsWith('data: ')) continue
       try {
         const data = JSON.parse(line.slice(6))
-        if (data.type === 'text')  { onChunk(data.chunk) }
-        else if (data.type === 'done')  { isProjectRequest = data.isProjectRequest }
+        if (data.type === 'text')       { onChunk(data.chunk) }
         else if (data.type === 'error') { const e = new Error(data.message); e.isServerError = true; throw e }
       } catch (e) {
         // 서버가 보낸 error 이벤트는 다시 던지고, JSON 파싱 실패는 무시
@@ -53,8 +50,6 @@ export async function sendChatMessage(userText, messages, onChunk) {
       }
     }
   }
-
-  return { isProjectRequest }
 }
 
 const AI_ROLE_MAP = {
@@ -92,57 +87,6 @@ const PROJECT_PATTERNS = [
 export function detectProjectIntent(text) {
   if (text.trim().length < 6) return false
   return PROJECT_PATTERNS.some(re => re.test(text))
-}
-
-// ── 일반 대화 응답 (mock) ─────────────────────────────────────
-const CHAT_RULES = [
-  {
-    pattern: /^(안녕|하이|hello|hi|ㅎㅇ)/i,
-    responses: [
-      '안녕하세요! AI.Orc 관리자 AI입니다. 어떤 것을 도와드릴까요?',
-      '반갑습니다! 무엇이든 편하게 말씀해 주세요.',
-    ],
-  },
-  {
-    pattern: /뭐야|뭐예요|어떤|소개|설명|무엇/,
-    responses: [
-      'AI.Orc는 복잡한 작업을 여러 전문 AI 에이전트들이 분담하여 처리하는 멀티 에이전트 시스템입니다. 개발, 분석, 자동화 등 다양한 작업을 맡겨보세요!',
-    ],
-  },
-  {
-    pattern: /어떻게|사용법|어떻게 쓰|어떻게 사용/,
-    responses: [
-      '원하시는 작업을 자유롭게 말씀해 주시면 됩니다.\n예) "쇼핑몰 재고 관리 시스템 만들어줘" 또는 "경쟁사 시장 분석 리포트 작성해줘"',
-    ],
-  },
-  {
-    pattern: /에이전트|AI|기능|할 수 있/,
-    responses: [
-      '요청 분석, 데이터 수집, 실행, 검토, 최종 작성까지 — 5종의 전문 에이전트가 파이프라인으로 협력합니다. 지원 모델: Claude, GPT-4o, Gemini',
-    ],
-  },
-  {
-    pattern: /감사|고마워|고맙|감사합니다|좋아|잘했|최고/,
-    responses: [
-      '감사합니다! 더 도움이 필요하시면 언제든지 말씀해 주세요.',
-      '천만에요! 다른 작업도 도와드릴게요.',
-    ],
-  },
-  {
-    pattern: /아니|괜찮|됐어|필요없|취소/,
-    responses: [
-      '알겠습니다! 다른 것이 필요하시면 편하게 말씀해 주세요.',
-    ],
-  },
-]
-
-export function generateChatResponse(text) {
-  for (const { pattern, responses } of CHAT_RULES) {
-    if (pattern.test(text)) {
-      return responses[Math.floor(Math.random() * responses.length)]
-    }
-  }
-  return '네! 구체적인 작업이 있으시면 말씀해 주세요. 에이전트들이 협력해서 처리해 드릴게요.'
 }
 
 // ── 관리자 AI에게 업무 분배 계획 요청 ───────────────────────

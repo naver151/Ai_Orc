@@ -3,7 +3,6 @@ UI 연동 엔드포인트
 
 POST /chat/stream    - 관리자 AI 채팅 SSE 스트리밍
 POST /manager/plan   - 에이전트 작업 계획 반환
-POST /agent/execute  - 에이전트별 실행 SSE 스트리밍
 POST /users          - 사용자 정보 저장
 """
 
@@ -24,27 +23,6 @@ from app.models import UserProfile
 
 router = APIRouter()
 
-
-# ── 역할키 → 시스템 프롬프트 ─────────────────────────────────────
-ROLE_PROMPTS: dict[str, str] = {
-    "analyst":   "당신은 요청 분석 전문가입니다. 사용자 요청의 핵심 의도와 세부 작업을 명확하게 파악하고 실행 계획을 수립합니다.",
-    "collector": "당신은 정보 수집 전문가입니다. 요청과 관련된 정보와 데이터를 체계적으로 수집·정리합니다.",
-    "executor":  "당신은 실행 전문가입니다. 주어진 작업을 직접 수행하여 구체적인 결과물(코드·문서·분석 등)을 생성합니다.",
-    "reviewer":  "당신은 검토 전문가입니다. 생성된 결과물을 꼼꼼히 검토하고 품질을 보장합니다.",
-    "writer":    "당신은 문서 작성 전문가입니다. 최종 결과물을 사용자에게 최적화된 형태로 정리하여 제시합니다.",
-}
-
-# ── 프로젝트 의도 감지 ────────────────────────────────────────────
-_PROJECT_RE = re.compile(
-    r"만들어|개발해|구현해|작성해|설계해|제작해|"
-    r"분석해|조사해|정리해|자동화|처리해|"
-    r"만들어줘|해줘|해주세요|만들어주세요|부탁해|"
-    r"시스템|프로젝트|서비스|앱|봇|플랫폼|"
-    r"리포트|보고서|코드|스크립트|데이터"
-)
-
-def _is_project_request(text: str) -> bool:
-    return len(text.strip()) >= 6 and bool(_PROJECT_RE.search(text))
 
 def _get_provider() -> str:
     if os.getenv("GITHUB_TOKEN"):
@@ -83,17 +61,6 @@ class PlanRequest(BaseModel):
     request: str
     user_uid: str | None = None
 
-class PreviousResult(BaseModel):
-    agentName: str
-    result: str
-
-class ExecuteRequest(BaseModel):
-    original_request: str
-    agent_task: str
-    role_key: str
-    previous_results: list[PreviousResult] = []
-    user_uid: str | None = None
-
 class UserData(BaseModel):
     uid: str | None = None
     name: str
@@ -111,7 +78,7 @@ async def chat_stream(req: ChatRequest, db: Session = Depends(get_db)):
 
     async def generate():
         try:
-            model = get_lc_model(provider, streaming=False)
+            model = get_lc_model(provider, streaming=True)
 
             system_content = (
                 f"{user_ctx}"
@@ -130,14 +97,13 @@ async def chat_stream(req: ChatRequest, db: Session = Depends(get_db)):
                     messages.append(AIMessage(content=content))
 
             messages.append(HumanMessage(content=req.message))
-            is_project = _is_project_request(req.message)
 
             async for chunk in model.astream(messages):
                 if chunk.content:
                     yield f"data: {json.dumps({'type':'text','chunk':chunk.content}, ensure_ascii=False)}\n\n"
                     await asyncio.sleep(0)
 
-            yield f"data: {json.dumps({'type':'done','isProjectRequest':is_project})}\n\n"
+            yield f"data: {json.dumps({'type':'done'})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type':'error','message':str(e)}, ensure_ascii=False)}\n\n"
@@ -196,55 +162,7 @@ async def manager_plan(req: PlanRequest, db: Session = Depends(get_db)):
         }
 
 
-# ── 3. POST /agent/execute ────────────────────────────────────────
-
-@router.post("/agent/execute")
-async def agent_execute(req: ExecuteRequest, db: Session = Depends(get_db)):
-    provider = _get_provider()
-    user_ctx = _get_user_context(req.user_uid, db)
-
-    async def generate():
-        try:
-            model = get_lc_model(provider, streaming=False)
-
-            system_prompt = (
-                f"{user_ctx}"
-                + ROLE_PROMPTS.get(req.role_key, "당신은 AI 전문 에이전트입니다. 주어진 작업을 성실히 수행합니다.")
-            )
-
-            pipeline_context = ""
-            if req.previous_results:
-                parts = [f"[{pr.agentName} 결과]\n{pr.result}" for pr in req.previous_results]
-                pipeline_context = "\n\n".join(parts) + "\n\n"
-
-            human_content = (
-                f"[원래 사용자 요청]\n{req.original_request}\n\n"
-                + (f"[이전 에이전트 작업 결과 — 이를 기반으로 작업하세요]\n{pipeline_context}" if pipeline_context else "")
-                + f"[배정된 작업]\n{req.agent_task}\n\n"
-                "위 작업을 수행해주세요. 한국어로 답변하세요."
-            )
-
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=human_content),
-            ]
-
-            async for chunk in model.astream(messages):
-                if chunk.content:
-                    yield f"data: {json.dumps({'type':'text','chunk':chunk.content}, ensure_ascii=False)}\n\n"
-                    await asyncio.sleep(0)
-
-        except Exception as e:
-            yield f"data: {json.dumps({'type':'error','message':str(e)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-# ── 4. POST /users ────────────────────────────────────────────────
+# ── 3. POST /users ────────────────────────────────────────────────
 
 @router.post("/users")
 def save_user(user: UserData, db: Session = Depends(get_db)):

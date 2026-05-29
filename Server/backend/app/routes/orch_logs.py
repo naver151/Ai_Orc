@@ -27,6 +27,7 @@ class OrchLogSummary(BaseModel):
     user_prompt: str
     plan_summary: str | None
     rating: int | None
+    token_usage: dict | None = None
 
     class Config:
         from_attributes = True
@@ -60,6 +61,7 @@ def _to_detail(log: OrchestrationLog) -> OrchLogDetail:
         user_prompt=log.user_prompt,
         plan_summary=log.plan_summary,
         rating=log.rating,
+        token_usage=log.token_usage,
         worker_names=json.loads(log.worker_names or "[]"),
         subtasks=json.loads(log.subtasks_json or "[]"),
         worker_results=json.loads(log.worker_results_json or "[]"),
@@ -111,9 +113,54 @@ def list_logs(
             user_prompt=log.user_prompt,
             plan_summary=log.plan_summary,
             rating=log.rating,
+            token_usage=log.token_usage,
         )
         for log in logs
     ]
+
+
+@router.get("/stats")
+def get_token_stats(db: Session = Depends(get_db)):
+    """
+    전체 오케스트레이션 누적 토큰 / 비용 통계 반환.
+    token_usage 가 기록된 로그만 집계.
+    """
+    logs = (
+        db.query(OrchestrationLog)
+        .filter(OrchestrationLog.token_usage.isnot(None))
+        .all()
+    )
+
+    total_input  = 0
+    total_output = 0
+    total_tokens = 0
+    total_calls  = 0
+    total_cost   = 0.0
+    by_provider: dict[str, dict] = {}
+
+    for log in logs:
+        u = log.token_usage or {}
+        total_input  += u.get("input_tokens",  0)
+        total_output += u.get("output_tokens", 0)
+        total_tokens += u.get("total_tokens",  0)
+        total_calls  += u.get("calls",         0)
+        total_cost   += u.get("cost_usd",      0.0)
+
+        for prov, pdata in (u.get("by_provider") or {}).items():
+            bp = by_provider.setdefault(prov, {"input": 0, "output": 0, "calls": 0})
+            bp["input"]  += pdata.get("input",  0)
+            bp["output"] += pdata.get("output", 0)
+            bp["calls"]  += pdata.get("calls",  0)
+
+    return {
+        "total_input_tokens":  total_input,
+        "total_output_tokens": total_output,
+        "total_tokens":        total_tokens,
+        "total_calls":         total_calls,
+        "total_cost_usd":      round(total_cost, 6),
+        "log_count":           len(logs),
+        "by_provider":         by_provider,
+    }
 
 
 @router.get("/export")

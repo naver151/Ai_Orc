@@ -14,7 +14,10 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.ai.agent_state import AgentState, AgentManager, agent_manager   # noqa: F401 (re-export)
-from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke
+from app.ai.lc_providers import (
+    get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke,
+    start_token_tracking, get_token_usage,
+)
 from app.ai.graph_runner import orchestration_graph
 from app.ai.graph_state import GraphState
 from app.ai.lc_memory import save_agent_memory, build_rag_context
@@ -32,6 +35,8 @@ class _Runner:
         if not state:
             return
 
+        start_token_tracking()   # 단일 워커도 토큰 추적
+
         # 메모리 주입 (LangChain retriever)
         rag = build_rag_context(ai_name, text, k=2)
         enriched = f"{rag}[현재 요청]\n{text}" if rag else text
@@ -44,7 +49,10 @@ class _Runner:
 
         result = ""
         try:
-            resp = await safe_ainvoke(model, [HumanMessage(content=enriched)], config=cfg)
+            resp = await safe_ainvoke(
+                model, [HumanMessage(content=enriched)], config=cfg,
+                provider=state.provider_key,
+            )
             result = resp.content
         except asyncio.CancelledError:
             pass
@@ -76,6 +84,8 @@ class _Runner:
         if not worker_names:
             await self.run_prompt(manager_name, text, websocket)
             return
+
+        start_token_tracking()   # 오케스트레이션 전체 토큰 추적 시작
 
         # 프로젝트 워크스페이스 경로 조회
         workspace_path   = ""
@@ -172,6 +182,22 @@ class _Runner:
             # WorkspaceFile 테이블에서 이 세션 이후 변경된 파일 목록을 조회
             await asyncio.to_thread(_end_session, project_id, session_id, summary)
 
+        # 토큰 사용량 수집
+        token_usage = get_token_usage()
+
+        # WebSocket으로 토큰 사용량 전송 (UI 실시간 표시)
+        if token_usage:
+            await websocket.send_json({
+                "type":        "token_usage",
+                "aiName":      manager_name,
+                "inputTokens":  token_usage["input_tokens"],
+                "outputTokens": token_usage["output_tokens"],
+                "totalTokens":  token_usage["total_tokens"],
+                "calls":        token_usage["calls"],
+                "costUsd":      round(token_usage["cost_usd"], 6),
+                "byProvider":   token_usage["by_provider"],
+            })
+
         # 오케스트레이션 로그 저장
         if not final.get("is_direct") and final.get("plan_summary"):
             await asyncio.to_thread(
@@ -183,6 +209,7 @@ class _Runner:
                 final.get("subtasks", []),
                 final.get("worker_results", {}),
                 final.get("final_synthesis", ""),
+                token_usage,
             )
 
 
@@ -209,10 +236,11 @@ def _end_session(
 ) -> None:
     """
     동기 함수 — asyncio.to_thread로 호출. 세션 종료 처리.
-    변경된 파일 목록은 WorkspaceFile 테이블에서 세션 시작 이후 updated_at 기준으로 수집.
+    - files_changed: WorkspaceFile 테이블에서 세션 시작 이후 updated_at 기준으로 수집.
+    - tasks_done   : ProjectTask 테이블에서 세션 시작 이후 completed_at 기준으로 수집.
     """
     from datetime import datetime, timezone
-    from app.models import WorkspaceFile
+    from app.models import WorkspaceFile, ProjectTask
     try:
         db = SessionLocal()
         session = db.query(ProjectSession).filter(
@@ -220,8 +248,9 @@ def _end_session(
             ProjectSession.project_id == project_id,
         ).first()
         if session:
-            # 세션 시작 이후 생성/수정된 파일
             started = session.started_at
+
+            # 세션 시작 이후 생성/수정된 파일
             files = (
                 db.query(WorkspaceFile.path)
                 .filter(
@@ -230,8 +259,21 @@ def _end_session(
                 )
                 .all()
             )
+
+            # 세션 시작 이후 완료된 태스크 ID 목록
+            done_tasks = (
+                db.query(ProjectTask.id)
+                .filter(
+                    ProjectTask.project_id == project_id,
+                    ProjectTask.status     == "done",
+                    ProjectTask.completed_at >= started,
+                )
+                .all()
+            )
+
             session.summary       = summary
             session.files_changed = [f.path for f in files]
+            session.tasks_done    = [t.id  for t in done_tasks]
             session.ended_at      = datetime.now(timezone.utc)
             db.commit()
     except Exception:
@@ -253,6 +295,7 @@ def _save_orch_log(
     subtasks:       list,
     worker_results: dict,
     synthesis:      str,
+    token_usage:    dict | None = None,
 ) -> None:
     try:
         db = SessionLocal()
@@ -267,6 +310,7 @@ def _save_orch_log(
                 ensure_ascii=False,
             ),
             synthesis_result=synthesis[:4000] if synthesis else "",
+            token_usage=token_usage,
         )
         db.add(log)
         db.commit()
