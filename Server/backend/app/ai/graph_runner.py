@@ -28,7 +28,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 
 from app.ai.graph_state import GraphState, SubTask
-from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke
+from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke, get_token_usage
 from app.ai.lc_memory import save_agent_memory, build_rag_context
 
 _ORCHESTRATE_RE = re.compile(r"<ORCHESTRATE>(.*?)</ORCHESTRATE>", re.DOTALL)
@@ -228,6 +228,25 @@ _MANAGER_SYSTEM = (
 
 # ── 공통 유틸 ─────────────────────────────────────────────────────────────────
 
+async def _send_token_usage(ws, ai_name: str) -> None:
+    """orchestration_done 직전에 호출 — 누적 토큰 사용량을 WS로 전송."""
+    try:
+        tu = get_token_usage()
+        if tu and tu.get("total_tokens", 0) > 0:
+            await ws.send_json({
+                "type":         "token_usage",
+                "aiName":       ai_name,
+                "inputTokens":  tu["input_tokens"],
+                "outputTokens": tu["output_tokens"],
+                "totalTokens":  tu["total_tokens"],
+                "calls":        tu["calls"],
+                "costUsd":      round(tu["cost_usd"], 6),
+                "byProvider":   tu["by_provider"],
+            })
+    except Exception:
+        pass  # WS가 닫혀 있어도 무시
+
+
 async def _check_control(state: GraphState, ai_name: str) -> bool:
     """pause/kill 상태 확인. kill이면 True 반환 (노드 중단 신호)."""
     am = state.get("agent_manager_ref")
@@ -420,6 +439,7 @@ async def plan_node(state: GraphState) -> dict:
     except Exception as e:
         await ws.send_json({"type": "log", "aiName": manager,
                             "message": f"[오류] 계획 수립 실패: {e}"})
+        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"is_direct": True, "direct_answer": "", "plan_summary": "", "subtasks": []}
 
@@ -431,6 +451,7 @@ async def plan_node(state: GraphState) -> dict:
         await ws.send_json({"type": "status",        "aiName": manager, "status": "COMPLETED"})
         await ws.send_json({"type": "progress",      "aiName": manager, "percent": 100})
         await ws.send_json({"type": "current_task",  "aiName": manager, "task": ""})
+        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"is_direct": True, "direct_answer": plan_text.strip(),
                 "plan_summary": "", "subtasks": []}
@@ -442,6 +463,7 @@ async def plan_node(state: GraphState) -> dict:
     except json.JSONDecodeError:
         await ws.send_json({"type": "log", "aiName": manager,
                             "message": "[오류] 계획 파싱 실패"})
+        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"is_direct": True, "direct_answer": "", "plan_summary": "", "subtasks": []}
 
@@ -514,6 +536,7 @@ async def plan_node(state: GraphState) -> dict:
 # ── 도구 바인딩 실행 루프 헬퍼 ───────────────────────────────────────────────
 # worker_node 와 retry_node 양쪽에서 공유. 중복 제거.
 
+# 워크스페이스(파일 생성) 모드 전용
 _WORKER_SYSTEM = (
     "당신은 프로젝트 워크스페이스에 실제 파일을 생성하는 AI 개발자입니다.\n\n"
     "⚠️ 절대 규칙 — 반드시 지켜야 합니다:\n"
@@ -529,6 +552,29 @@ _WORKER_SYSTEM = (
     "• Python 프로젝트: src/main.py, src/models.py, requirements.txt\n"
     "• FastAPI: src/main.py, src/routers/, requirements.txt\n"
     "• 절대경로 사용 금지 — 항상 상대경로\n"
+)
+
+# 일반 텍스트 모드 — 1인 창업가 리서치·분석 특화
+_RESEARCH_SYSTEM = (
+    "당신은 1인 창업가를 지원하는 전문 AI 리서처입니다.\n"
+    "맡은 역할에 집중하여 실용적이고 즉시 활용 가능한 결과물을 작성하세요.\n\n"
+
+    "■ 핵심 원칙\n"
+    "• web_search 도구를 적극 활용해 최신 데이터를 기반으로 답변하세요\n"
+    "• 수치·출처·근거를 포함한 구체적인 정보를 제공하세요\n"
+    "• 창업가가 바로 사용할 수 있는 형식으로 정리하세요 (표, 목록, 섹션 구분)\n"
+    "• 추상적 조언보다 '지금 당장 할 수 있는 것'을 우선하세요\n"
+    "• A4 1~2페이지 분량으로 충실하게 작성하세요\n\n"
+
+    "■ 검색 전략\n"
+    "• 한국어 검색: '시장명 시장규모 2024', '경쟁사명 서비스 특징'\n"
+    "• 영어 검색: 'market size [industry] 2024', '[competitor] pricing features'\n"
+    "• 최소 2~3회 검색으로 교차 확인하세요\n\n"
+
+    "■ 출력 형식\n"
+    "• 마크다운으로 작성 (## 제목, | 표, - 목록)\n"
+    "• 핵심 인사이트를 맨 앞에 1~2문장으로 요약\n"
+    "• 데이터 출처는 (출처: URL 또는 기관명) 형식으로 표기\n"
 )
 
 
@@ -663,18 +709,18 @@ async def worker_node(state: GraphState) -> dict:
         )
 
     else:
-        # ── 기본 모드: 도구 없이 텍스트 생성 (하위 호환) ─────────────────
-        model = get_lc_model(provider_key, streaming=True)
-        try:
-            resp = await safe_ainvoke(
-                model, _build_messages("", enriched), config=cfg, provider=provider_key
-            )
-            result = resp.content
-        except asyncio.CancelledError:
+        # ── 기본 모드: 웹 검색 도구 + 창업 특화 시스템 프롬프트 ────────
+        from app.ai.search_tools import get_search_tool
+        search_tool = get_search_tool()
+        tool_map    = {search_tool.name: search_tool}
+        model       = get_lc_model(provider_key, streaming=False).bind_tools([search_tool])
+        messages    = _build_messages(_RESEARCH_SYSTEM, enriched)
+
+        result = await _run_tool_loop(
+            state, ws, worker_name, messages, tool_map, model, provider=provider_key
+        )
+        if not result:
             result = ""
-        except Exception as e:
-            result = f"[오류] {e}"
-            await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
 
     # 메모리 저장
     if result:
@@ -744,6 +790,7 @@ async def synthesize_node(state: GraphState) -> dict:
 
     # kill 체크
     if await _check_control(state, manager):
+        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"final_synthesis": ""}
 
@@ -758,6 +805,7 @@ async def synthesize_node(state: GraphState) -> dict:
         await ws.send_json({"type": "log", "aiName": manager,
                             "message": "[오류] 팀원 결과가 없습니다."})
         await ws.send_json({"type": "status",   "aiName": manager, "status": "COMPLETED"})
+        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"final_synthesis": ""}
 
@@ -1064,14 +1112,19 @@ async def retry_node(state: GraphState) -> dict:
             provider=provider_key,
         )
     else:
-        model = get_lc_model(provider_key, streaming=True)
-        try:
-            resp = await safe_ainvoke(
-                model, _build_messages("", enriched), config=cfg, provider=provider_key
-            )
-            result = resp.content
-        except Exception as e:
-            result = f"[재실행 오류] {e}"
+        from app.ai.search_tools import get_search_tool
+        search_tool = get_search_tool()
+        tool_map    = {search_tool.name: search_tool}
+        model       = get_lc_model(provider_key, streaming=False).bind_tools([search_tool])
+        messages    = _build_messages(_RESEARCH_SYSTEM, enriched)
+
+        result = await _run_tool_loop(
+            state, ws, worker_name, messages, tool_map, model,
+            step_label="재실행 AI 응답 대기 중",
+            provider=provider_key,
+        )
+        if not result:
+            result = ""
 
     await ws.send_json({"type": "current_task", "aiName": worker_name, "task": ""})
     return {"worker_results": {worker_name: result}}

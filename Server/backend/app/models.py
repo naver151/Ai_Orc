@@ -31,6 +31,8 @@ class ProjectModel(Base):
 
     milestones = relationship("Milestone",      back_populates="project", cascade="all, delete-orphan")
     sessions   = relationship("ProjectSession", back_populates="project", cascade="all, delete-orphan")
+    files      = relationship("WorkspaceFile",  cascade="all, delete-orphan",
+                              foreign_keys="[WorkspaceFile.project_id]")
 
 
 class Milestone(Base):

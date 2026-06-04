@@ -4,7 +4,8 @@ import AgentWorkspace from './AgentWorkspace'
 import ProjectSelector from './ProjectSelector'
 import MilestoneBoard from './MilestoneBoard'
 import SessionPanel   from './SessionPanel'
-import { sendChatMessage, analyzeRequest, detectProjectIntent } from '../utils/agentManager'
+import { sendChatMessage, analyzeRequest, detectProjectIntent, AGENT_TEMPLATES, AI_ROLE_MAP, AI_LABELS } from '../utils/agentManager'
+import AgentConfigPanel from './AgentConfigPanel'
 
 
 // ── 채팅 저장소 헬퍼 ─────────────────────────────────────────
@@ -142,6 +143,10 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
   const [workspace, setWorkspace]     = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [chatModalOpen, setChatModalOpen] = useState(false)
+  // 에이전트 구성 모달
+  const [configOpen,       setConfigOpen]       = useState(false)
+  const [configInitial,    setConfigInitial]    = useState([])
+  const [pendingTemplateReq, setPendingTemplateReq] = useState('')
   const [projectId, setProjectId]         = useState(null)   // 선택된 프로젝트 ID
   const [milestoneOpen, setMilestoneOpen] = useState(false)  // MilestoneBoard 패널
   const [sessionOpen,   setSessionOpen]   = useState(false)  // SessionPanel 패널
@@ -376,25 +381,36 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
     setSessionOpen(o => { const next = !o; if (next) setMilestoneOpen(false); return next })
   }
 
-  // ── 채팅 없이 바로 워크스페이스 열기 ──────────────────────
-  const handleOpenWorkspace = async () => {
-    // 기본 에이전트 세트 (백엔드 호출 없이 즉시 진입)
+  // ── 에이전트 구성 확인 후 워크스페이스 시작 ───────────────
+  const _startWithAgents = (agents, request = '') => {
+    setWorkspace({ id: Date.now(), agents, request, instant: false })
+    setChatModalOpen(true)
+  }
+
+  // ── 템플릿으로 워크스페이스 시작 (config panel 경유) ────────
+  const handleTemplateStart = (template) => {
+    const HANDOFF_MSGS = { analyst: '분석 결과 전달', collector: '수집 데이터 전달', executor: '실행 결과 전달', reviewer: '검토 완료본 전달', writer: null }
+    const agents = template.agents.map((a, i, arr) => ({
+      ...a,
+      isManager:  i === 0,   // 첫 번째가 관리자
+      aiType:     AI_ROLE_MAP[a.roleKey] ?? 'github',
+      color:      (AI_LABELS[AI_ROLE_MAP[a.roleKey] ?? 'github'] ?? { color: '#7c6dfa' }).color,
+      handoffMsg: i < arr.length - 1 ? (HANDOFF_MSGS[a.roleKey] ?? '다음 에이전트로 전달') : null,
+    }))
+    setPendingTemplateReq(template.desc)   // desc를 초기 요청으로 보존
+    setConfigInitial(agents)
+    setConfigOpen(true)
+  }
+
+  // ── 채팅 없이 바로 워크스페이스 열기 (config panel 경유) ───
+  const handleOpenWorkspace = () => {
     const defaultAgents = [
-      {
-        roleKey: 'analyst',  name: '관리자 AI',   task: '명령을 기다리는 중...',
-        aiType: 'github', color: '#7c6dfa', handoffMsg: null, isManager: true, provider: 'github',
-      },
-      {
-        roleKey: 'executor', name: '작업자 AI A',  task: '명령을 기다리는 중...',
-        aiType: 'github', color: '#4caf82', handoffMsg: null, isManager: false, provider: 'github',
-      },
-      {
-        roleKey: 'writer',   name: '작업자 AI B',  task: '명령을 기다리는 중...',
-        aiType: 'github', color: '#f5a623', handoffMsg: null, isManager: false, provider: 'github',
-      },
+      { roleKey: 'analyst',  name: '관리자 AI',  aiType: 'github', provider: 'github', color: '#7c6dfa', isManager: true,  task: '', handoffMsg: null },
+      { roleKey: 'executor', name: '작업자 AI A', aiType: 'github', provider: 'github', color: '#4caf82', isManager: false, task: '', handoffMsg: null },
+      { roleKey: 'writer',   name: '작업자 AI B', aiType: 'github', provider: 'github', color: '#f5a623', isManager: false, task: '', handoffMsg: null },
     ]
-    setWorkspace({ id: Date.now(), agents: defaultAgents, request: '', instant: false })
-    setChatModalOpen(true)   // 플로팅 챗 모달을 바로 열어줌
+    setConfigInitial(defaultAgents)
+    setConfigOpen(true)
   }
 
   // ── 워크스페이스 닫기 (채팅으로 복귀) ────────────────────
@@ -518,6 +534,17 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
 
   return (
     <div className={styles.chatpage}>
+
+      {/* ── 에이전트 구성 모달 ── */}
+      <AgentConfigPanel
+        open={configOpen}
+        initial={configInitial}
+        onClose={() => { setConfigOpen(false); setPendingTemplateReq('') }}
+        onConfirm={(agents) => {
+          _startWithAgents(agents, pendingTemplateReq)
+          setPendingTemplateReq('')
+        }}
+      />
 
       {/* ── 사이드바 백드롭 (일반 챗 모드만) ── */}
       {!workspace && sidebarOpen && (
@@ -748,6 +775,34 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
                       : '무엇이든 편하게 말씀해 주세요.'}
                   </div>
                   {renderInputBar()}
+
+                  {/* ── 1인 스타트업 템플릿 빠른 시작 ── */}
+                  <div className={styles.templateSection}>
+                    <div className={styles.templateLabel}>🚀 빠른 시작 — AI 팀 템플릿</div>
+                    {[
+                      { category: '기획·검증', ids: ['startup_validate', 'pitch_prep'] },
+                      { category: '운영·리서치', ids: ['weekly_brief', 'customer_research'] },
+                      { category: '마케팅·영업·행정', ids: ['cold_email', 'legal_docs'] },
+                      { category: '자금·전략', ids: ['gov_funding', 'biz_strategy'] },
+                    ].map(group => (
+                      <div key={group.category} className={styles.templateGroup}>
+                        <div className={styles.templateGroupLabel}>{group.category}</div>
+                        <div className={styles.templateChips}>
+                          {AGENT_TEMPLATES.filter(t => group.ids.includes(t.id)).map(t => (
+                            <button
+                              key={t.id}
+                              className={styles.templateChip}
+                              onClick={() => handleTemplateStart(t)}
+                              title={t.desc}
+                            >
+                              <span className={styles.templateChipTitle}>{t.label}</span>
+                              <span className={styles.templateChipDesc}>{t.desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             ) : (

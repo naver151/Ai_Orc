@@ -155,14 +155,39 @@ def update_project(project_id: int, body: ProjectUpdate, db: Session = Depends(g
 
 @router.delete("/projects/{project_id}")
 def delete_project(project_id: int, db: Session = Depends(get_db)):
-    """프로젝트 및 관련 데이터 전체 삭제."""
+    """프로젝트 및 관련 데이터 전체 삭제.
+
+    FK 삭제 순서:
+      1. workspace_files (task_id → project_tasks 참조 해제)
+      2. project_tasks   (milestone_id → milestones 참조 해제)
+      3. milestones / project_sessions
+      4. projects
+    """
     import shutil
+    from app.models import WorkspaceFile, ProjectTask, Milestone, ProjectSession
+
     project = _get_project_or_404(project_id, db)
-    # 워크스페이스 디렉터리 삭제
+
+    # 1) workspace_files 먼저 삭제 (task_id FK 해제)
+    db.query(WorkspaceFile).filter(WorkspaceFile.project_id == project_id).delete(synchronize_session=False)
+
+    # 2) project_tasks 삭제 (milestone cascade 보다 먼저)
+    milestone_ids = [
+        m.id for m in db.query(Milestone.id).filter(Milestone.project_id == project_id)
+    ]
+    if milestone_ids:
+        db.query(ProjectTask).filter(ProjectTask.milestone_id.in_(milestone_ids)).delete(synchronize_session=False)
+
+    # 3) milestones / sessions
+    db.query(Milestone).filter(Milestone.project_id == project_id).delete(synchronize_session=False)
+    db.query(ProjectSession).filter(ProjectSession.project_id == project_id).delete(synchronize_session=False)
+
+    # 4) 워크스페이스 디렉터리 + 프로젝트 레코드 삭제
     if project.workspace_path:
         ws = Path(project.workspace_path)
         if ws.exists():
             shutil.rmtree(ws, ignore_errors=True)
+
     db.delete(project)
     db.commit()
     return {"ok": True, "id": project_id}

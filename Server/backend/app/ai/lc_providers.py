@@ -85,10 +85,20 @@ def _accumulate_usage(usage_metadata: dict | None, provider: str) -> None:
     tracker["cost_usd"] += (inp * rates["input"] + out * rates["output"]) / 1_000_000
 
 
-# ── GitHub Models 동시 요청 제한
-# GitHub 무료 티어 rate limit이 빡빡하므로 순차 실행(1)으로 충돌 방지
-# 유료 API(Claude/GPT/Gemini) 사용 시 2~4로 늘려도 됨
-_LLM_SEMAPHORE = asyncio.Semaphore(1)
+# ── 프로바이더별 동시 요청 Semaphore ────────────────────────────────────────
+# GitHub 무료 티어: rate limit이 엄격하여 1개로 제한
+# 유료 API(Claude/GPT/Gemini): 동시 3개 허용 (환경변수 LLM_CONCURRENCY로 조정)
+_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+
+def _get_semaphore(provider: str) -> asyncio.Semaphore:
+    """프로바이더별 Semaphore 반환. 처음 호출 시 생성 (lazy init)."""
+    if provider not in _SEMAPHORES:
+        if "github" in provider:
+            limit = 1   # 무료 티어 — 동시 1개
+        else:
+            limit = int(os.getenv("LLM_CONCURRENCY", "3"))  # 유료 API
+        _SEMAPHORES[provider] = asyncio.Semaphore(limit)
+    return _SEMAPHORES[provider]
 
 
 def _extract_usage(resp) -> dict | None:
@@ -126,15 +136,16 @@ async def safe_ainvoke(
 ):
     """
     Rate limit(429) 보호 래퍼.
-    - Semaphore(1): 동시 호출을 1개로 제한 (GitHub 무료 티어 rate limit 대응)
+    - 프로바이더별 Semaphore: GitHub=1, 유료 API=LLM_CONCURRENCY(기본 3)
     - 지수 백오프: 429 발생 시 2s → 4s → 8s → 16s 후 재시도
     - timeout: 단일 호출 최대 대기 시간 (기본 120초)
     - provider: 응답 후 토큰 사용량을 해당 provider에 누적
     """
+    semaphore = _get_semaphore(provider)
     last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:
-            async with _LLM_SEMAPHORE:
+            async with semaphore:
                 coro = (
                     model.ainvoke(messages, config=config)
                     if config is not None

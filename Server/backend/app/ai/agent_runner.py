@@ -68,6 +68,20 @@ class _Runner:
             except Exception:
                 pass
 
+        # 토큰 사용량 WebSocket 전송 (ChatPage AgentWorkspace에서 수집)
+        token_usage = get_token_usage()
+        if token_usage and token_usage.get("total_tokens", 0) > 0:
+            await websocket.send_json({
+                "type":         "token_usage",
+                "aiName":       ai_name,
+                "inputTokens":  token_usage["input_tokens"],
+                "outputTokens": token_usage["output_tokens"],
+                "totalTokens":  token_usage["total_tokens"],
+                "calls":        token_usage["calls"],
+                "costUsd":      round(token_usage["cost_usd"], 6),
+                "byProvider":   token_usage["by_provider"],
+            })
+
         await websocket.send_json({"type": "current_task", "aiName": ai_name, "task": ""})
         state.status = "COMPLETED"
 
@@ -182,24 +196,12 @@ class _Runner:
             # WorkspaceFile 테이블에서 이 세션 이후 변경된 파일 목록을 조회
             await asyncio.to_thread(_end_session, project_id, session_id, summary)
 
-        # 토큰 사용량 수집
+        # 토큰 사용량 수집 (graph_runner 내부에서 이미 WS 전송 완료)
         token_usage = get_token_usage()
-
-        # WebSocket으로 토큰 사용량 전송 (UI 실시간 표시)
-        if token_usage:
-            await websocket.send_json({
-                "type":        "token_usage",
-                "aiName":      manager_name,
-                "inputTokens":  token_usage["input_tokens"],
-                "outputTokens": token_usage["output_tokens"],
-                "totalTokens":  token_usage["total_tokens"],
-                "calls":        token_usage["calls"],
-                "costUsd":      round(token_usage["cost_usd"], 6),
-                "byProvider":   token_usage["by_provider"],
-            })
 
         # 오케스트레이션 로그 저장
         if not final.get("is_direct") and final.get("plan_summary"):
+            print(f"[orch-log] 저장 시작 — prompt={text[:40]!r}")
             await asyncio.to_thread(
                 _save_orch_log,
                 manager_name,
@@ -211,6 +213,8 @@ class _Runner:
                 final.get("final_synthesis", ""),
                 token_usage,
             )
+        else:
+            print(f"[orch-log] 저장 건너뜀 — is_direct={final.get('is_direct')}, plan_summary={final.get('plan_summary')!r}")
 
 
 # ── Phase 4: 세션 헬퍼 ───────────────────────────────────────────────────────
@@ -314,8 +318,9 @@ def _save_orch_log(
         )
         db.add(log)
         db.commit()
-    except Exception:
-        pass
+        print(f"[orch-log] 저장 완료 — id={log.id}, tokens={token_usage.get('total_tokens') if token_usage else 'N/A'}")
+    except Exception as e:
+        print(f"[orch-log] 저장 실패 — {type(e).__name__}: {e}")
     finally:
         db.close()
 

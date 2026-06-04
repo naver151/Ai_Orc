@@ -6,8 +6,11 @@ LangChain VectorStore 기반 메모리 (Phase 3)
 - retrieve_context()    : 쿼리와 유사한 과거 기억을 retriever로 검색
 - build_rag_context()   : 검색 결과를 프롬프트용 문자열로 변환
 
-임베딩: langchain-community의 FakeEmbeddings (무료, 테스트용)
-        → OPENAI_API_KEY 있으면 OpenAIEmbeddings로 자동 교체
+임베딩 우선순위:
+  1. GitHub Token  → text-embedding-3-small (Azure AI Inference)
+  2. OpenAI API Key → text-embedding-3-small
+  3. SentenceTransformers → all-MiniLM-L6-v2 (로컬, API 키 불필요, 90MB)
+  4. FakeEmbeddings → 의미 검색 불가 (최후 폴백)
 """
 
 from __future__ import annotations
@@ -17,34 +20,59 @@ from typing import Optional
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
 
-# 임베딩: GitHub 토큰으로 Azure AI Inference 엔드포인트의 text-embedding-3-small 사용
+
 def _get_embeddings():
+    """
+    임베딩 모델을 우선순위에 따라 선택한다.
+    3번 SentenceTransformers까지는 실제 의미 기반 유사도 검색이 가능하다.
+    """
+    # 1순위: GitHub Token으로 Azure AI Inference 엔드포인트 사용
     github_token = os.getenv("GITHUB_TOKEN", "")
     if github_token:
         try:
             from langchain_openai import OpenAIEmbeddings
-            return OpenAIEmbeddings(
+            emb = OpenAIEmbeddings(
                 model="text-embedding-3-small",
                 api_key=github_token,
                 base_url="https://models.inference.ai.azure.com",
             )
+            print("[메모리] 임베딩: GitHub Models (text-embedding-3-small)")
+            return emb
         except Exception:
             pass
-    # 폴백: OpenAI 키
+
+    # 2순위: OpenAI API 키
     openai_key = os.getenv("OPENAI_API_KEY", "")
     if openai_key and not openai_key.startswith("your"):
         try:
             from langchain_openai import OpenAIEmbeddings
-            return OpenAIEmbeddings(api_key=openai_key)
+            emb = OpenAIEmbeddings(model="text-embedding-3-small", api_key=openai_key)
+            print("[메모리] 임베딩: OpenAI (text-embedding-3-small)")
+            return emb
         except Exception:
             pass
-    # 최후 폴백: 가짜 임베딩 (의미 검색 불가)
+
+    # 3순위: 로컬 SentenceTransformers (API 키 불필요, 실제 의미 검색 가능)
+    try:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        emb = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+        print("[메모리] 임베딩: SentenceTransformers (all-MiniLM-L6-v2, 로컬)")
+        return emb
+    except Exception as e:
+        print(f"[메모리] SentenceTransformers 로드 실패: {e}")
+
+    # 4순위: 최후 폴백 — 의미 검색 불가
     print(
-        "[경고] 임베딩 API 키 없음 (GITHUB_TOKEN / OPENAI_API_KEY) — "
-        "FakeEmbeddings 사용. RAG 유사도 검색이 비활성화됩니다."
+        "[경고] 사용 가능한 임베딩 모델 없음 — FakeEmbeddings 사용. "
+        "RAG 유사도 검색이 비활성화됩니다.\n"
+        "  해결: pip install sentence-transformers"
     )
     from langchain_core.embeddings import FakeEmbeddings
-    return FakeEmbeddings(size=1536)
+    return FakeEmbeddings(size=384)
 
 
 # VectorStore 싱글턴 (Chroma)

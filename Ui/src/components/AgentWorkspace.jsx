@@ -218,6 +218,48 @@ function makePanelHTML(a, s) {
   `
 }
 
+// ── 마크다운 내보내기 ─────────────────────────────────────
+function _showExportBtn(resultEl, request, agents, nameToState, synthesis, styles) {
+  if (!resultEl) return
+  const existing = resultEl.querySelector('[data-export-btn]')
+  if (existing) return
+
+  const btn = document.createElement('button')
+  btn.dataset.exportBtn = '1'
+  btn.className = styles.exportMdBtn ?? ''
+  btn.textContent = '📄 마크다운으로 내보내기'
+  btn.style.cssText = 'display:block;margin:16px auto 0;padding:8px 20px;background:var(--accent,#7c6dfa);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;'
+
+  btn.onclick = () => {
+    const lines = []
+    lines.push(`# ${request || 'AI 팀 분석 결과'}`)
+    lines.push(`\n> 생성 일시: ${new Date().toLocaleString('ko-KR')}\n`)
+
+    agents.forEach(a => {
+      const text = nameToState[a.name]?.fullText ?? ''
+      if (!text.trim()) return
+      lines.push(`## ${a.name}`)
+      lines.push(text.trim())
+      lines.push('')
+    })
+
+    if (synthesis?.trim()) {
+      lines.push('## 📋 최종 종합')
+      lines.push(synthesis.trim())
+    }
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
+    a.download = `AI_분석_${Date.now()}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  resultEl.appendChild(btn)
+}
+
 // ── 메인 컴포넌트 ─────────────────────────────────────────
 export default function AgentWorkspace({ agents, request, onDone, instant = false, projectId = null }) {
   const sceneRef   = useRef(null)
@@ -616,9 +658,12 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
 
     agents.forEach((_, i) => panelEls[i].classList.add(styles.running))
 
-    let doneCount     = 0
-    let lastOutput    = ''
-    let synthesisText = ''
+    let doneCount       = 0
+    let lastOutput      = ''
+    let synthesisText   = ''
+    let backendDidSave  = false  // orchestration_synthesis 수신 시 true → 백엔드가 이미 저장
+    // 에이전트별 token_usage 이벤트를 합산
+    let accTokenUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, calls: 0, cost_usd: 0, by_provider: {} }
 
     // 토큰 단위 스트리밍을 라인 버퍼로 렌더링
     const flushChunk = (agentName, chunk) => {
@@ -927,6 +972,7 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
 
           // 종합 단계 시작
           case 'orchestration_synthesis':
+            backendDidSave = true  // synthesize_node 실행 → _save_orch_log 호출 예정
             if (progText) progText.textContent = '종합 중...'
             break
 
@@ -987,6 +1033,24 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
             break
           }
 
+          // 에이전트별 토큰 사용량 누적
+          case 'token_usage': {
+            accTokenUsage.input_tokens  += evt.inputTokens  ?? 0
+            accTokenUsage.output_tokens += evt.outputTokens ?? 0
+            accTokenUsage.total_tokens  += evt.totalTokens  ?? 0
+            accTokenUsage.calls         += evt.calls        ?? 0
+            accTokenUsage.cost_usd      += evt.costUsd      ?? 0
+            const bp = evt.byProvider ?? {}
+            Object.entries(bp).forEach(([prov, data]) => {
+              const p = accTokenUsage.by_provider[prov] ?? { input: 0, output: 0, calls: 0 }
+              p.input  += data.input  ?? 0
+              p.output += data.output ?? 0
+              p.calls  += data.calls  ?? 0
+              accTokenUsage.by_provider[prov] = p
+            })
+            break
+          }
+
           // 오케스트레이션 완료
           case 'orchestration_done':
             ws.close()
@@ -1026,6 +1090,29 @@ export default function AgentWorkspace({ agents, request, onDone, instant = fals
     const finalOutput = synthesisText || lastOutput
     await sleep(400)
     showResult(result, stream, work, styles, agents, finalOutput)
+
+    // ── 오케스트레이션 로그 저장 ──────────────────────────
+    // backendDidSave=true → synthesize_node 실행 완료, _save_orch_log 저장 예정 → 중복 저장 방지
+    if (!backendDidSave) {
+      try {
+        await fetch('http://localhost:8000/orchestration-logs/ui', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            request:          taskRequest,
+            agents:           agents.map(a => ({ name: a.name, roleKey: a.roleKey, task: a.task ?? '', aiType: a.aiType })),
+            worker_results:   agents.map(a => nameToState[a.name]?.fullText ?? ''),
+            synthesis_result: finalOutput,
+            token_usage:      accTokenUsage.total_tokens > 0 ? accTokenUsage : null,
+          }),
+        })
+      } catch (e) {
+        console.warn('[orch-log] 저장 실패:', e)
+      }
+    }
+
+    // ── 마크다운 내보내기 버튼 표시 ────────────────────────
+    _showExportBtn(result, taskRequest, agents, nameToState, finalOutput, styles)
 
     onDone?.({
       request:         taskRequest,

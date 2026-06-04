@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import styles from './AdminPage.module.css'
 
 const BACKEND = 'http://localhost:8000'
@@ -560,27 +560,209 @@ function StatsTab() {
 // ═══════════════════════════════════════════════════════════════
 // 탭 3: 시스템 현황
 // ═══════════════════════════════════════════════════════════════
+const LIMIT_KEY = 'aiorc_token_limits'
+
+function loadLimits() {
+  try { return JSON.parse(localStorage.getItem(LIMIT_KEY)) ?? {} } catch { return {} }
+}
+function saveLimits(limits) {
+  localStorage.setItem(LIMIT_KEY, JSON.stringify(limits))
+}
+
+function LimitBar({ label, used, limit, unit = '', color = 'var(--accent)' }) {
+  if (!limit || limit <= 0) return null
+  const pct   = Math.min(Math.round((used / limit) * 100), 100)
+  const over  = used > limit
+  const barColor = over ? '#ff5555' : pct > 80 ? '#f5a623' : color
+  return (
+    <div className={styles.limitBarWrap}>
+      <div className={styles.limitBarHeader}>
+        <span className={styles.limitBarLabel}>{label}</span>
+        <span className={styles.limitBarNumbers} style={{ color: over ? '#ff5555' : 'var(--text-muted)' }}>
+          {used.toLocaleString()}{unit} / {limit.toLocaleString()}{unit}
+          {over && ' ⚠️ 초과'}
+        </span>
+        <span className={styles.limitBarPct} style={{ color: barColor }}>{pct}%</span>
+      </div>
+      <div className={styles.limitBarTrack}>
+        <div className={styles.limitBarFill} style={{ width: `${pct}%`, background: barColor }} />
+      </div>
+      <div className={styles.limitBarRemain}>
+        남은 한도: <strong style={{ color: over ? '#ff5555' : 'var(--teal)' }}>
+          {over ? '0' : (limit - used).toLocaleString()}{unit}
+        </strong>
+      </div>
+    </div>
+  )
+}
+
 function SystemTab() {
-  const [summary, setSummary] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [summary,    setSummary]    = useState(null)
+  const [tokenStats, setTokenStats] = useState(null)
+  const [loading,    setLoading]    = useState(true)
+  const [limits,     setLimits]     = useState(loadLimits)
+  const [editing,    setEditing]    = useState(false)
+  const [draft,      setDraft]      = useState({})
+  const tokenRef = useRef(null)
+  const costRef  = useRef(null)
 
   useEffect(() => {
     const load = async () => {
       setLoading(true)
       try {
-        const res = await fetch(`${BACKEND}/performance/summary`)
-        if (res.ok) setSummary(await res.json())
+        const [perfRes, tokenRes] = await Promise.all([
+          fetch(`${BACKEND}/performance/summary`),
+          fetch(`${BACKEND}/orchestration-logs/stats`),
+        ])
+        if (perfRes.ok)  setSummary(await perfRes.json())
+        if (tokenRes.ok) setTokenStats(await tokenRes.json())
       } catch {}
       setLoading(false)
     }
     load()
   }, [])
 
+  const startEdit = () => {
+    setDraft({ tokenLimit: limits.tokenLimit ?? '', costLimit: limits.costLimit ?? '' })
+    setEditing(true)
+    setTimeout(() => tokenRef.current?.focus(), 50)
+  }
+
+  const saveEdit = () => {
+    const next = {
+      tokenLimit: parseInt(draft.tokenLimit)  || 0,
+      costLimit:  parseFloat(draft.costLimit) || 0,
+    }
+    setLimits(next)
+    saveLimits(next)
+    setEditing(false)
+  }
+
   if (loading) return <div className={styles.tabLoading}>불러오는 중...</div>
   if (!summary)  return <div className={styles.tabLoading}>데이터를 가져올 수 없습니다.</div>
 
   return (
     <div className={styles.statsBody}>
+
+      {/* ── 한도 설정 + 진행률 ── */}
+      <div className={styles.statsCard} style={{ marginBottom: 16 }}>
+        <div className={styles.limitSectionHeader}>
+          <div className={styles.statsCardTitle} style={{ marginBottom: 0 }}>🎯 사용 한도</div>
+          <button className={styles.limitEditBtn} onClick={editing ? saveEdit : startEdit}>
+            {editing ? '저장' : '한도 설정'}
+          </button>
+          {editing && (
+            <button className={styles.limitCancelBtn} onClick={() => setEditing(false)}>취소</button>
+          )}
+        </div>
+
+        {editing ? (
+          <div className={styles.limitEditForm}>
+            <label className={styles.limitEditRow}>
+              <span className={styles.limitEditLabel}>토큰 한도</span>
+              <input
+                ref={tokenRef}
+                type="number" min="0"
+                className={styles.limitEditInput}
+                value={draft.tokenLimit}
+                onChange={e => setDraft(d => ({ ...d, tokenLimit: e.target.value }))}
+                placeholder="예: 100000"
+              />
+              <span className={styles.limitEditUnit}>tok</span>
+            </label>
+            <label className={styles.limitEditRow}>
+              <span className={styles.limitEditLabel}>비용 한도</span>
+              <input
+                ref={costRef}
+                type="number" min="0" step="0.01"
+                className={styles.limitEditInput}
+                value={draft.costLimit}
+                onChange={e => setDraft(d => ({ ...d, costLimit: e.target.value }))}
+                placeholder="예: 5.00"
+              />
+              <span className={styles.limitEditUnit}>USD</span>
+            </label>
+          </div>
+        ) : (limits.tokenLimit > 0 || limits.costLimit > 0) && tokenStats ? (
+          <div className={styles.limitBarsWrap}>
+            <LimitBar
+              label="토큰 사용량"
+              used={tokenStats.total_tokens}
+              limit={limits.tokenLimit}
+              unit=" tok"
+              color="var(--accent)"
+            />
+            <LimitBar
+              label="비용 사용량"
+              used={tokenStats.total_cost_usd}
+              limit={limits.costLimit}
+              unit=" USD"
+              color="var(--teal)"
+            />
+          </div>
+        ) : (
+          <div className={styles.limitEmpty}>
+            한도를 설정하면 사용량 진행률을 확인할 수 있습니다.
+          </div>
+        )}
+      </div>
+
+      {/* ── 토큰 / 비용 누적 통계 ── */}
+      {tokenStats && (
+        <div className={styles.statsCard} style={{ marginBottom: 16 }}>
+          <div className={styles.statsCardTitle}>💰 누적 토큰 사용량</div>
+
+          {/* 총합 KPI */}
+          <div className={styles.kpiRow} style={{ marginBottom: 12 }}>
+            <KpiCard
+              icon="📥" label="입력 토큰"
+              value={tokenStats.total_input_tokens.toLocaleString()}
+              sub="총 누적"
+              color="var(--accent)"
+            />
+            <KpiCard
+              icon="📤" label="출력 토큰"
+              value={tokenStats.total_output_tokens.toLocaleString()}
+              sub="총 누적"
+              color="var(--teal)"
+            />
+            <KpiCard
+              icon="🔢" label="전체 토큰"
+              value={tokenStats.total_tokens.toLocaleString()}
+              sub={`${tokenStats.total_calls}회 호출`}
+              color="#f5a623"
+            />
+            <KpiCard
+              icon="💵" label="예상 비용"
+              value={tokenStats.total_cost_usd > 0
+                ? `$${tokenStats.total_cost_usd.toFixed(4)}`
+                : '무료'}
+              sub={`${tokenStats.log_count}개 세션`}
+              color={tokenStats.total_cost_usd > 0 ? '#ff5555' : 'var(--teal)'}
+            />
+          </div>
+
+          {/* Provider별 상세 */}
+          {tokenStats.by_provider && Object.keys(tokenStats.by_provider).length > 0 && (
+            <div>
+              <div className={styles.sectionTitle} style={{ marginBottom: 8 }}>Provider별 토큰</div>
+              <BarChart
+                items={Object.entries(tokenStats.by_provider)
+                  .sort((a, b) => (b[1].input + b[1].output) - (a[1].input + a[1].output))
+                  .map(([prov, d]) => ({
+                    label: prov.toUpperCase(),
+                    value: d.input + d.output,
+                    sub:   `${d.calls}회`,
+                    color: prov === 'claude'  ? '#7c6dfa'
+                         : prov === 'gpt'     ? '#4caf82'
+                         : prov === 'gemini'  ? '#f5a623'
+                         : 'var(--accent)',
+                  }))}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* KPI 카드 */}
       <div className={styles.kpiRow}>

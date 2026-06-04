@@ -484,3 +484,121 @@
   color: var(--text);
   font-weight: 700;
 }
+
+/* ── 한도 설정 섹션 ── */
+.limitSectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.limitEditBtn {
+  margin-left: auto;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.limitEditBtn:hover { opacity: .85; }
+.limitCancelBtn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.limitEditForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.limitEditRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.limitEditLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  width: 70px;
+  flex-shrink: 0;
+}
+.limitEditInput {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+  transition: border-color .15s;
+}
+.limitEditInput:focus { border-color: var(--accent); }
+.limitEditUnit {
+  font-size: 12px;
+  color: var(--text-muted);
+  width: 36px;
+  flex-shrink: 0;
+}
+.limitBarsWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.limitBarWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.limitBarHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.limitBarLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.limitBarNumbers {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+}
+.limitBarPct {
+  font-size: 13px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+.limitBarTrack {
+  height: 10px;
+  background: var(--surface2);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.limitBarFill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width .6s cubic-bezier(.4,0,.2,1);
+  min-width: 2px;
+}
+.limitBarRemain {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.limitEmpty {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 12px 0;
+  text-align: center;
+}

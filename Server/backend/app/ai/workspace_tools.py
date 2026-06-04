@@ -378,4 +378,9 @@ class WorkspaceTools:
                     description=description,
                 )
             )
+
+        # 웹 검색 도구 추가 (항상 포함)
+        from app.ai.search_tools import get_search_tool
+        tools.append(get_search_tool())
+
         return tools

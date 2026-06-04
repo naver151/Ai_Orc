@@ -49,6 +49,7 @@ class UiLogCreate(BaseModel):
     agents: list[dict]          # [{name, roleKey, task, aiType}]
     worker_results: list[str]   # 에이전트별 최종 출력 텍스트
     synthesis_result: str = ""  # 마지막 에이전트 출력 (요약본)
+    token_usage: dict | None = None  # 프론트에서 집계한 토큰 사용량
 
 
 # ── 헬퍼 ───────────────────────────────────────────────────────
@@ -85,6 +86,7 @@ def save_ui_log(body: UiLogCreate, db: Session = Depends(get_db)):
         subtasks_json=json.dumps(subtasks, ensure_ascii=False),
         worker_results_json=json.dumps(body.worker_results, ensure_ascii=False),
         synthesis_result=body.synthesis_result or (body.worker_results[-1] if body.worker_results else ""),
+        token_usage=body.token_usage,
     )
     db.add(log)
     db.commit()
