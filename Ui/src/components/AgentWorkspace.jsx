@@ -219,45 +219,201 @@ function makePanelHTML(a, s) {
 }
 
 // ── 마크다운 내보내기 ─────────────────────────────────────
+// ── 마크다운 → HTML 변환 (경량 파서) ────────────────────────
+function _mdToHtml(md) {
+  if (!md) return ''
+  let html = md
+    // 코드 블록 (``` ... ```)
+    .replace(/```[\w]*\n?([\s\S]*?)```/g, (_, code) =>
+      `<pre><code>${code.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`)
+    // 인라인 코드
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // ### h3
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    // ## h2
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    // # h1
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    // **bold**
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    // *italic*
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    // 인용문 > ...
+    .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
+    // 수평선
+    .replace(/^---$/gm, '<hr>')
+
+  // 표 처리
+  html = html.replace(/((?:^\|.+\|\n)+)/gm, (tableBlock) => {
+    const rows = tableBlock.trim().split('\n')
+    let tableHtml = '<table>'
+    rows.forEach((row, i) => {
+      if (/^\|[-| :]+\|$/.test(row.trim())) return // 구분선 행 스킵
+      const cells = row.split('|').filter((_, ci) => ci > 0 && ci < row.split('|').length - 1)
+      const tag = (i === 0) ? 'th' : 'td'
+      tableHtml += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>'
+    })
+    tableHtml += '</table>'
+    return tableHtml
+  })
+
+  // 목록 (- item)
+  html = html.replace(/((?:^[-•] .+\n?)+)/gm, (block) => {
+    const items = block.trim().split('\n')
+      .map(l => `<li>${l.replace(/^[-•] /, '')}</li>`).join('')
+    return `<ul>${items}</ul>`
+  })
+
+  // 번호 목록 (1. item)
+  html = html.replace(/((?:^\d+\. .+\n?)+)/gm, (block) => {
+    const items = block.trim().split('\n')
+      .map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('')
+    return `<ol>${items}</ol>`
+  })
+
+  // 빈 줄 → 단락 구분
+  html = html.replace(/\n\n+/g, '</p><p>')
+  return `<p>${html}</p>`
+}
+
+// ── 보고서 HTML 생성 ─────────────────────────────────────────
+function _buildReportHtml(request, agents, nameToState, synthesis) {
+  const date = new Date().toLocaleString('ko-KR')
+  const title = request || 'AI 팀 분석 결과'
+
+  const sections = agents
+    .map(a => {
+      const text = nameToState[a.name]?.fullText ?? ''
+      if (!text.trim()) return ''
+      return `
+        <div class="section">
+          <h2 class="section-title">
+            <span class="agent-dot" style="background:${a.color || '#7c6dfa'}"></span>
+            ${a.name}
+          </h2>
+          <div class="section-body">${_mdToHtml(text.trim())}</div>
+        </div>`
+    }).join('')
+
+  const synthSection = synthesis?.trim() ? `
+    <div class="section synthesis">
+      <h2 class="section-title">📋 최종 종합</h2>
+      <div class="section-body">${_mdToHtml(synthesis.trim())}</div>
+    </div>` : ''
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
+      font-size: 14px; line-height: 1.8; color: #1a1a2e;
+      max-width: 840px; margin: 0 auto; padding: 48px 40px;
+    }
+    .cover { margin-bottom: 40px; padding-bottom: 24px; border-bottom: 3px solid #2e4057; }
+    .cover h1 { font-size: 24px; font-weight: 700; color: #2e4057; margin-bottom: 8px; }
+    .cover .meta { font-size: 12px; color: #888; }
+    .section { margin-bottom: 36px; break-inside: avoid; }
+    .section-title {
+      font-size: 16px; font-weight: 700; color: #2e4057;
+      padding: 10px 14px; margin-bottom: 14px;
+      background: #f0f4f8; border-radius: 6px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .agent-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .synthesis .section-title { background: #e8f0fe; }
+    .section-body { padding: 0 4px; }
+    h1 { font-size: 20px; color: #2e4057; margin: 20px 0 10px; }
+    h2 { font-size: 16px; color: #2e4057; margin: 16px 0 8px; }
+    h3 { font-size: 14px; font-weight: 600; margin: 12px 0 6px; }
+    p { margin-bottom: 10px; }
+    ul, ol { margin: 8px 0 12px 20px; }
+    li { margin-bottom: 4px; }
+    strong { font-weight: 700; }
+    em { font-style: italic; color: #555; }
+    code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 12px; }
+    pre { background: #f1f5f9; padding: 14px; border-radius: 6px; overflow-x: auto; margin: 10px 0; }
+    pre code { background: none; padding: 0; }
+    blockquote { border-left: 3px solid #2e4057; padding: 8px 14px; background: #f8fafc; color: #555; margin: 10px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+    th { background: #2e4057; color: #fff; padding: 8px 12px; text-align: left; }
+    td { border: 1px solid #dde; padding: 8px 12px; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    hr { border: none; border-top: 1px solid #dde; margin: 20px 0; }
+    @media print {
+      body { padding: 20px; }
+      .section { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="cover">
+    <h1>${title}</h1>
+    <div class="meta">생성 일시: ${date} &nbsp;|&nbsp; AI.Orc 멀티에이전트 분석</div>
+  </div>
+  ${sections}
+  ${synthSection}
+</body>
+</html>`
+}
+
+// ── 내보내기 버튼 표시 ───────────────────────────────────────
 function _showExportBtn(resultEl, request, agents, nameToState, synthesis, styles) {
   if (!resultEl) return
-  const existing = resultEl.querySelector('[data-export-btn]')
+  const existing = resultEl.querySelector('[data-export-wrap]')
   if (existing) return
 
-  const btn = document.createElement('button')
-  btn.dataset.exportBtn = '1'
-  btn.className = styles.exportMdBtn ?? ''
-  btn.textContent = '📄 마크다운으로 내보내기'
-  btn.style.cssText = 'display:block;margin:16px auto 0;padding:8px 20px;background:var(--accent,#7c6dfa);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;'
+  const wrap = document.createElement('div')
+  wrap.dataset.exportWrap = '1'
+  wrap.style.cssText = 'display:flex;gap:8px;justify-content:center;margin-top:20px;flex-wrap:wrap;'
 
-  btn.onclick = () => {
-    const lines = []
-    lines.push(`# ${request || 'AI 팀 분석 결과'}`)
-    lines.push(`\n> 생성 일시: ${new Date().toLocaleString('ko-KR')}\n`)
+  // ── PDF 내보내기 ──
+  const pdfBtn = document.createElement('button')
+  pdfBtn.textContent = '📑 PDF로 내보내기'
+  pdfBtn.style.cssText = 'padding:8px 20px;background:#2e4057;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;'
+  pdfBtn.onclick = () => {
+    const html = _buildReportHtml(request, agents, nameToState, synthesis)
+    const win  = window.open('', '_blank', 'width=900,height=700')
+    if (!win) { alert('팝업이 차단됐습니다. 팝업을 허용해 주세요.'); return }
+    win.document.write(html)
+    win.document.close()
+    // 폰트 로딩 후 인쇄
+    win.addEventListener('load', () => {
+      setTimeout(() => { win.focus(); win.print() }, 600)
+    })
+    // load 이미 완료된 경우 대비
+    if (win.document.readyState === 'complete') {
+      setTimeout(() => { win.focus(); win.print() }, 600)
+    }
+  }
 
+  // ── 마크다운 내보내기 ──
+  const mdBtn = document.createElement('button')
+  mdBtn.textContent = '📄 마크다운 (.md)'
+  mdBtn.style.cssText = 'padding:8px 20px;background:var(--surface,#1e1e2e);color:var(--text,#e0e0e0);border:1px solid var(--border,#333);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;'
+  mdBtn.onclick = () => {
+    const lines = [`# ${request || 'AI 팀 분석 결과'}`, `\n> 생성 일시: ${new Date().toLocaleString('ko-KR')}\n`]
     agents.forEach(a => {
       const text = nameToState[a.name]?.fullText ?? ''
       if (!text.trim()) return
-      lines.push(`## ${a.name}`)
-      lines.push(text.trim())
-      lines.push('')
+      lines.push(`## ${a.name}`, text.trim(), '')
     })
-
-    if (synthesis?.trim()) {
-      lines.push('## 📋 최종 종합')
-      lines.push(synthesis.trim())
-    }
-
+    if (synthesis?.trim()) lines.push('## 📋 최종 종합', synthesis.trim())
     const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a')
-    a.href     = url
-    a.download = `AI_분석_${Date.now()}.md`
-    a.click()
+    a.href = url; a.download = `AI_분석_${Date.now()}.md`; a.click()
     URL.revokeObjectURL(url)
   }
 
-  resultEl.appendChild(btn)
+  wrap.appendChild(pdfBtn)
+  wrap.appendChild(mdBtn)
+  resultEl.appendChild(wrap)
 }
 
 // ── 메인 컴포넌트 ─────────────────────────────────────────

@@ -267,6 +267,74 @@ function DonutChart({ items }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// ── 로그 PDF 내보내기 ─────────────────────────────────────────
+function exportLogAsPdf(log) {
+  const title   = log.user_prompt || 'AI 오케스트레이션 로그'
+  const date    = formatDate(log.created_at)
+  const workers = log.worker_results ?? []
+
+  const agentSections = workers.map((w, i) => {
+    const name   = w.worker ?? `에이전트 ${i + 1}`
+    const result = (w.result ?? '').trim()
+    if (!result) return ''
+    const escapedResult = result
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    return `<div class="section">
+      <h2>${name}</h2>
+      <div class="body">${escapedResult}</div>
+    </div>`
+  }).join('')
+
+  const synthSection = log.synthesis_result ? `
+    <div class="section synthesis">
+      <h2>📋 최종 종합</h2>
+      <div class="body">${log.synthesis_result.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</div>
+    </div>` : ''
+
+  const tokenInfo = log.token_usage?.total_tokens > 0
+    ? `<p class="meta">토큰: ${log.token_usage.total_tokens.toLocaleString()} tok${log.token_usage.cost_usd > 0 ? ` · $${log.token_usage.cost_usd.toFixed(5)}` : ''}</p>`
+    : ''
+
+  const html = `<!DOCTYPE html>
+<html lang="ko"><head>
+  <meta charset="UTF-8">
+  <title>${title}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;600;700&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Noto Sans KR', sans-serif; font-size: 13px; line-height: 1.8; color: #1a1a2e; max-width: 840px; margin: 0 auto; padding: 48px 40px; }
+    .cover { margin-bottom: 36px; padding-bottom: 20px; border-bottom: 3px solid #2e4057; }
+    .cover h1 { font-size: 22px; font-weight: 700; color: #2e4057; margin-bottom: 8px; }
+    .meta { font-size: 11px; color: #888; margin-top: 4px; }
+    .plan { background: #f0f4f8; border-radius: 6px; padding: 10px 14px; margin-bottom: 24px; font-size: 13px; color: #444; }
+    .section { margin-bottom: 32px; break-inside: avoid; }
+    .section h2 { font-size: 15px; font-weight: 700; color: #2e4057; background: #f0f4f8; padding: 8px 14px; border-radius: 6px; margin-bottom: 12px; }
+    .synthesis h2 { background: #e8f0fe; }
+    .body { padding: 0 4px; word-break: break-word; }
+    strong { font-weight: 700; }
+    @media print { body { padding: 20px; } .section { page-break-inside: avoid; } }
+  </style>
+</head><body>
+  <div class="cover">
+    <h1>${title}</h1>
+    <p class="meta">실행 일시: ${date}</p>
+    ${tokenInfo}
+  </div>
+  ${log.plan_summary ? `<div class="plan">📋 ${log.plan_summary}</div>` : ''}
+  ${agentSections}
+  ${synthSection}
+</body></html>`
+
+  const win = window.open('', '_blank', 'width=900,height=700')
+  if (!win) { alert('팝업이 차단됐습니다. 팝업 허용 후 다시 시도해주세요.'); return }
+  win.document.write(html)
+  win.document.close()
+  win.addEventListener('load', () => setTimeout(() => { win.focus(); win.print() }, 500))
+  if (win.document.readyState === 'complete') setTimeout(() => { win.focus(); win.print() }, 500)
+}
+
 // 탭 1: 실행 로그
 // ═══════════════════════════════════════════════════════════════
 function LogsTab() {
@@ -353,6 +421,15 @@ function LogsTab() {
         ) : (
           <>
             <div className={styles.detailPrompt}>{selected.user_prompt}</div>
+
+            {/* PDF 내보내기 버튼 */}
+            <button
+              className={styles.exportPdfBtn}
+              onClick={() => exportLogAsPdf(selected)}
+              title="이 로그를 PDF로 저장"
+            >
+              📑 PDF 내보내기
+            </button>
 
             {selected.plan_summary && (
               <div className={styles.detailPlan}>📋 계획: {selected.plan_summary}</div>
