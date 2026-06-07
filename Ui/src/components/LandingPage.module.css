@@ -137,8 +137,49 @@
   transform: scale(1.04);
 }
 
+/* ── 역할 카드 행 ── */
+.roleRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: 2.5rem;
+  max-width: 520px;
+}
+
+.roleCard {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text2);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.roleCard:hover {
+  border-color: rgba(124,109,250,0.4);
+  color: var(--text);
+  background: var(--surface2);
+}
+
+.roleIcon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.roleLabel {
+  letter-spacing: 0.01em;
+}
+
 @media (max-width: 480px) {
   .title { font-size: 3rem; }
+  .roleRow { gap: 6px; }
+  .roleCard { padding: 5px 10px; font-size: 11px; }
 }
 
 /* ── 테마 토글 ── */

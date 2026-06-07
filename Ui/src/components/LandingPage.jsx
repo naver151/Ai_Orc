@@ -1,12 +1,15 @@
 import { useRef } from 'react'
 import styles from './LandingPage.module.css'
+import { FOUNDER_ROLES } from '../utils/agentManager'
 
-export default function LandingPage({ onStart, onInfo, onAdmin, theme = 'dark', onThemeToggle }) {
+export default function LandingPage({ onStart, onInfo, theme = 'dark', onThemeToggle }) {
   const startBtnRef = useRef(null)
 
   const handleStart = () => {
     onStart(startBtnRef.current)
   }
+
+  const roles = Object.entries(FOUNDER_ROLES)
 
   return (
     <div className={styles.landing}>
@@ -32,7 +35,7 @@ export default function LandingPage({ onStart, onInfo, onAdmin, theme = 'dark', 
       <div className={styles.content}>
         <div className={styles.tag}>
           <span className={styles.tagDot} />
-          AI Multi-Agent System
+          1인 창업가를 위한 AI 팀
         </div>
 
         <h1 className={styles.title}>
@@ -40,19 +43,26 @@ export default function LandingPage({ onStart, onInfo, onAdmin, theme = 'dark', 
         </h1>
 
         <p className={styles.subtitle}>
-          여러 AI 에이전트가 협력하여<br />
-          복잡한 문제를 함께 해결합니다
+          혼자서도 팀처럼 일하세요.<br />
+          전략·마케팅·개발·리서치를 AI 팀이 동시에 처리합니다.
         </p>
+
+        {/* 역할 소개 */}
+        <div className={styles.roleRow}>
+          {roles.map(([key, role]) => (
+            <div key={key} className={styles.roleCard}>
+              <span className={styles.roleIcon}>{role.icon}</span>
+              <span className={styles.roleLabel}>{role.label}</span>
+            </div>
+          ))}
+        </div>
 
         <div className={styles.btnRow}>
           <button ref={startBtnRef} className={styles.btnStart} onClick={handleStart}>
-            시작하기
+            팀 구성하기
           </button>
           <button className={styles.btnInfo} onClick={onInfo}>
             설명 보기
-          </button>
-          <button className={styles.btnInfo} onClick={onAdmin} style={{ marginLeft: 4 }}>
-            관리자
           </button>
         </div>
       </div>

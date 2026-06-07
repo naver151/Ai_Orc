@@ -16,176 +16,29 @@ LangGraph 멀티에이전트 오케스트레이션 그래프 (Phase 2)
 
 from __future__ import annotations
 import json
-import os
 import re
 import asyncio
-import random
-
-_SCORE_RE = re.compile(r"⭐\s*점수\s*:\s*(\d+)\s*/\s*10", re.IGNORECASE)
+from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
+from langgraph.types import Send
 
 from app.ai.graph_state import GraphState, SubTask
-from app.ai.lc_providers import get_lc_model, WSStreamHandler, ProgressWSStreamHandler, safe_ainvoke, get_token_usage
+from app.ai.lc_providers import get_lc_model, WSStreamHandler
 from app.ai.lc_memory import save_agent_memory, build_rag_context
 
 _ORCHESTRATE_RE = re.compile(r"<ORCHESTRATE>(.*?)</ORCHESTRATE>", re.DOTALL)
 
-
-class _LockedWS:
-    """
-    WebSocket 동시 쓰기 보호 래퍼.
-    asyncio.gather()로 여러 코루틴이 병렬 실행될 때
-    send_json 프레임 충돌 / RuntimeError 방지.
-    send_json만 Lock으로 직렬화하고, 나머지 속성은 원본 ws에 위임.
-    """
-    __slots__ = ("_ws", "_lock")
-
-    def __init__(self, ws, lock: asyncio.Lock) -> None:
-        self._ws   = ws
-        self._lock = lock
-
-    async def send_json(self, data) -> None:
-        async with self._lock:
-            await self._ws.send_json(data)
-
-    def __getattr__(self, name):
-        return getattr(self._ws, name)
-
-# ── 적응형 분배 상수 / 유틸 ──────────────────────────────────────────────────
-
-_PERF_N   = 10    # 최근 N건 평균
-_MIN_DATA  = 5    # 최소 데이터 건수 (미달 시 LLM 판단 폴백)
-_EPSILON   = 0.10 # 10% 탐색
-
-
-def _classify_task_type(task_text: str) -> str:
-    """서브태스크 텍스트를 카테고리 키워드로 분류."""
-    t = task_text.lower()
-    if any(k in t for k in ['코드', '구현', '개발', '프로그래밍', 'code', 'implement', 'programming']):
-        return 'code'
-    if any(k in t for k in ['분석', '리서치', '조사', 'analysis', 'research', '검토', '비교']):
-        return 'analysis'
-    if any(k in t for k in ['작성', '문서', '보고서', '정리', 'writing', 'document', 'report']):
-        return 'writing'
-    return 'general'
-
-
-def _get_provider_avg_scores(
-    task_type: str,
-    providers: list[str],
-    db=None,
-) -> dict[str, float | None]:
-    """
-    DB에서 provider별 최근 N건 평균 점수 조회.
-    _MIN_DATA 미만이면 None 반환 (데이터 부족 신호).
-
-    Args:
-        db: 외부에서 주입할 세션 (테스트용). None이면 내부적으로 SessionLocal 생성.
-    """
-    from app.models import AgentPerformance
-
-    _own_session = db is None
-    if _own_session:
-        from app.db import SessionLocal
-        db = SessionLocal()
-
-    result: dict[str, float | None] = {}
-    try:
-        for provider in providers:
-            rows = (
-                db.query(AgentPerformance.score)
-                .filter(
-                    AgentPerformance.task_type == task_type,
-                    AgentPerformance.provider  == provider,
-                )
-                .order_by(AgentPerformance.created_at.desc())
-                .limit(_PERF_N)
-                .all()
-            )
-            if len(rows) >= _MIN_DATA:
-                result[provider] = sum(r.score for r in rows) / len(rows)
-            else:
-                result[provider] = None
-    except Exception:
-        pass
-    finally:
-        if _own_session:
-            try:
-                db.close()
-            except Exception:
-                pass
-    return result
-
-
-def _epsilon_greedy_provider(task_type: str, available_providers: list[str]) -> str | None:
-    """
-    epsilon-greedy로 provider 선택.
-    - 10%: 랜덤 탐색
-    - 90%: 최고 평균 점수 provider
-    데이터 부족 시 None 반환 → LLM 판단 폴백.
-    """
-    scores = _get_provider_avg_scores(task_type, available_providers)
-    scored = {p: s for p, s in scores.items() if s is not None}
-
-    if not scored:
-        return None  # 모두 데이터 부족 → 폴백
-
-    if random.random() < _EPSILON:
-        return random.choice(available_providers)  # 탐색
-
-    return max(scored, key=lambda p: scored[p])  # 활용
-
-
-def _save_performance_sync(task_type: str, provider: str, score: int) -> None:
-    """성능 점수 동기 저장 (asyncio.to_thread에서 호출)."""
-    from app.db import SessionLocal
-    from app.models import AgentPerformance
-
-    try:
-        db = SessionLocal()
-        db.add(AgentPerformance(task_type=task_type, provider=provider, score=score))
-        db.commit()
-    except Exception:
-        pass
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
-
-
-# ── 교차 리뷰 모델 매핑 ───────────────────────────────────────────────────────
-# 워커가 쓴 모델과 다른 모델로 리뷰 → 서로 다른 시각 확보
-_CROSS_REVIEW_MAP: dict[str, str] = {
-    "github": "claude",
-    "gpt":    "claude",
-    "claude": "github",
-    "gemini": "claude",
-}
-
-def _get_reviewer_key(worker_provider: str) -> str:
-    """워커 provider와 다른 리뷰어 모델 키 반환. API 키 없으면 github 폴백."""
-    reviewer = _CROSS_REVIEW_MAP.get(worker_provider, "github")
-    if reviewer == "claude" and not os.getenv("ANTHROPIC_API_KEY"):
-        reviewer = "github"
-    if reviewer == "gemini" and not (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")):
-        reviewer = "github"
-    return reviewer
-
-
 # ── 관리자 시스템 프롬프트 ────────────────────────────────────────────────────
 
 _MANAGER_SYSTEM = (
-    "당신은 AI 팀의 총괄 관리자입니다.\n"
-    "사용자의 요청을 분석하고, 팀원들에게 작업을 분배하여 최고의 결과를 만들어냅니다.\n\n"
+    "당신은 1인 창업가를 지원하는 AI 팀의 총괄 관리자입니다.\n"
+    "사용자의 요청을 분석하고, 팀원들에게 작업을 병렬 분배하여 최고의 결과를 만들어냅니다.\n\n"
 
     "■ 현재 팀 구성\n"
     "{worker_list}\n\n"
-
-    "{project_context}"
 
     "■ 작업 분배 판단 기준\n"
     "분배 필요: 서로 독립적으로 병렬 처리 가능한 서브태스크 2개 이상\n"
@@ -199,21 +52,48 @@ _MANAGER_SYSTEM = (
     ']}}\n'
     "</ORCHESTRATE>\n\n"
 
-    "■ 분야별 예시\n\n"
-    "[ 개발 ] 사용자: REST API 서버 만들어줘 / 팀원: 2명\n"
+    "■ 창업가 특화 예시\n\n"
+
+    "[ 랜딩페이지 ] 사용자: 랜딩페이지 카피와 구조 만들어줘 / 팀원: 3명\n"
     "<ORCHESTRATE>\n"
-    '{{"plan": "API 설계·구현 병렬 분리", "subtasks": ['
-    '{{"worker_index": 1, "task": "FastAPI 엔드포인트 설계: 리소스 구조, URL, 요청/응답 스키마 정의"}},'
-    '{{"worker_index": 2, "task": "FastAPI 코드 구현: 라우터, 모델, CRUD, 예외 처리"}}'
+    '{{"plan": "포지셔닝·카피·구조 병렬 작업", "subtasks": ['
+    '{{"worker_index": 1, "task": "서비스 포지셔닝 분석: 핵심 가치제안, 타겟 고객, 차별화 포인트 정의"}},'
+    '{{"worker_index": 2, "task": "랜딩페이지 섹션별 카피 작성: 헤드라인, 서브카피, CTA, 사회적 증거 문구"}},'
+    '{{"worker_index": 3, "task": "랜딩페이지 HTML/CSS 구조 구현: 히어로, 기능소개, 후기, 프라이싱 섹션"}}'
     ']}}\n'
     "</ORCHESTRATE>\n\n"
 
-    "[ 투자 ] 사용자: 삼성전자 투자 분석 / 팀원: 3명\n"
+    "[ 경쟁사 분석 ] 사용자: 경쟁사 분석하고 차별화 전략 세워줘 / 팀원: 2명\n"
     "<ORCHESTRATE>\n"
-    '{{"plan": "재무·시장·리스크 3축 병렬 분석", "subtasks": ['
-    '{{"worker_index": 1, "task": "3개년 재무제표 분석: 매출성장률, 영업이익률, ROE, 부채비율"}},'
-    '{{"worker_index": 2, "task": "시장 동향·경쟁사 비교: SK하이닉스·TSMC·인텔 점유율·기술력"}},'
-    '{{"worker_index": 3, "task": "리스크·밸류에이션: 지정학 리스크, PER·PBR 기반 투자의견"}}'
+    '{{"plan": "리서치·전략 병렬 분리", "subtasks": ['
+    '{{"worker_index": 1, "task": "경쟁사 3~5곳 분석: 제품 기능, 가격, 타겟, 강약점, 마케팅 채널 비교"}},'
+    '{{"worker_index": 2, "task": "차별화 전략 수립: 포지셔닝 갭, 고객 페인포인트 기반 우리만의 강점 도출"}}'
+    ']}}\n'
+    "</ORCHESTRATE>\n\n"
+
+    "[ 마케팅 전략 ] 사용자: 저비용 마케팅 전략 세워줘 / 팀원: 3명\n"
+    "<ORCHESTRATE>\n"
+    '{{"plan": "채널·콘텐츠·실행계획 병렬 수립", "subtasks": ['
+    '{{"worker_index": 1, "task": "마케팅 채널 분석: SNS, 콘텐츠 마케팅, 커뮤니티, SEO 채널별 효과·비용 비교"}},'
+    '{{"worker_index": 2, "task": "콘텐츠 전략: 타겟 고객 페르소나 기반 콘텐츠 주제, 포맷, 게시 빈도 계획"}},'
+    '{{"worker_index": 3, "task": "90일 실행 로드맵: 주차별 액션아이템, KPI, 예산 배분 계획"}}'
+    ']}}\n'
+    "</ORCHESTRATE>\n\n"
+
+    "[ 투자 피칭 ] 사용자: 투자자 피칭덱 내용 작성해줘 / 팀원: 3명\n"
+    "<ORCHESTRATE>\n"
+    '{{"plan": "시장·사업모델·스토리 병렬 작성", "subtasks": ['
+    '{{"worker_index": 1, "task": "시장 분석 슬라이드: TAM/SAM/SOM 규모, 성장률, 시장 진입 타이밍 근거"}},'
+    '{{"worker_index": 2, "task": "사업모델 슬라이드: 수익 구조, 유닛 이코노믹스, 확장성 논리"}},'
+    '{{"worker_index": 3, "task": "스토리텔링 스크립트: 문제-솔루션-트랙션-팀 흐름의 설득력 있는 내러티브"}}'
+    ']}}\n'
+    "</ORCHESTRATE>\n\n"
+
+    "[ 개발 ] 사용자: MVP 기능 설계해줘 / 팀원: 2명\n"
+    "<ORCHESTRATE>\n"
+    '{{"plan": "제품 전략·기술 구현 병렬 분리", "subtasks": ['
+    '{{"worker_index": 1, "task": "MVP 범위 정의: 핵심 사용자 스토리, 기능 우선순위(MoSCoW), 성공 지표 설정"}},'
+    '{{"worker_index": 2, "task": "기술 스택 및 아키텍처 설계: 개발 환경, API 구조, DB 스키마, 배포 계획"}}'
     ']}}\n'
     "</ORCHESTRATE>\n\n"
 
@@ -224,28 +104,25 @@ _MANAGER_SYSTEM = (
 )
 
 
-# ProgressWSStreamHandler는 lc_providers에서 import (중복 정의 제거)
+# ── 개선된 WebSocket 스트리밍 핸들러 (진행률 추적 포함) ───────────────────────
+
+class ProgressWSStreamHandler(WSStreamHandler):
+    """문자 수 기반 진행률을 함께 전송하는 스트리밍 핸들러."""
+
+    def __init__(self, websocket: Any, ai_name: str):
+        super().__init__(websocket, ai_name)
+        self._char_count = 0
+
+    async def on_llm_new_token(self, token: str, **kwargs) -> None:
+        if token:
+            self._char_count += len(token)
+            await self.ws.send_json({"type": "log", "aiName": self.ai_name, "message": token})
+            # 약 2000자를 100%로 환산 (긴 응답도 부드럽게 표시)
+            pct = min(int(self._char_count / 20), 99)
+            await self.ws.send_json({"type": "progress", "aiName": self.ai_name, "percent": pct})
+
 
 # ── 공통 유틸 ─────────────────────────────────────────────────────────────────
-
-async def _send_token_usage(ws, ai_name: str) -> None:
-    """orchestration_done 직전에 호출 — 누적 토큰 사용량을 WS로 전송."""
-    try:
-        tu = get_token_usage()
-        if tu and tu.get("total_tokens", 0) > 0:
-            await ws.send_json({
-                "type":         "token_usage",
-                "aiName":       ai_name,
-                "inputTokens":  tu["input_tokens"],
-                "outputTokens": tu["output_tokens"],
-                "totalTokens":  tu["total_tokens"],
-                "calls":        tu["calls"],
-                "costUsd":      round(tu["cost_usd"], 6),
-                "byProvider":   tu["by_provider"],
-            })
-    except Exception:
-        pass  # WS가 닫혀 있어도 무시
-
 
 async def _check_control(state: GraphState, ai_name: str) -> bool:
     """pause/kill 상태 확인. kill이면 True 반환 (노드 중단 신호)."""
@@ -277,114 +154,6 @@ def _inject_memory(ai_name: str, text: str) -> str:
     return f"{rag}[현재 요청]\n{text}"
 
 
-# ── 마일스톤 DB 헬퍼 (동기 — asyncio.to_thread 전용) ─────────────────────────
-
-def _create_session_milestone(
-    project_id:  int,
-    plan_summary: str,
-    subtasks:    list,
-) -> tuple[int | None, list[int | None]]:
-    """
-    plan_node 이후 호출.
-    세션 단위 Milestone 1개 + subtask마다 ProjectTask 생성.
-    Returns: (milestone_id, [task_id, ...])
-    """
-    from app.db import SessionLocal
-    from app.models import Milestone, ProjectTask
-    try:
-        db = SessionLocal()
-        ms = Milestone(
-            project_id=project_id,
-            title=(plan_summary[:100] if plan_summary else "작업 세션"),
-            status="in_progress",
-            order=0,
-        )
-        db.add(ms)
-        db.flush()   # ms.id 확보
-
-        task_ids: list[int | None] = []
-        for i, st in enumerate(subtasks):
-            task = ProjectTask(
-                milestone_id=ms.id,
-                project_id=project_id,
-                title=(st.get("task", "")[:200] or f"태스크 {i+1}"),
-                description=st.get("task", ""),
-                status="todo",
-                order=i,
-            )
-            db.add(task)
-            db.flush()
-            task_ids.append(task.id)
-
-        db.commit()
-        return ms.id, task_ids
-    except Exception:
-        return None, [None] * len(subtasks)
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
-
-
-def _update_task_status_sync(
-    project_id: int,
-    task_id:    int,
-    status:     str,
-    agent_name: str = "",
-) -> None:
-    """worker_node 시작/완료 시 태스크 상태 업데이트."""
-    from app.db import SessionLocal
-    from app.models import ProjectTask
-    from datetime import datetime, timezone
-    try:
-        db = SessionLocal()
-        task = db.query(ProjectTask).filter(
-            ProjectTask.id == task_id,
-            ProjectTask.project_id == project_id,
-        ).first()
-        if task:
-            task.status = status
-            if agent_name:
-                task.assigned_agent = agent_name
-            if status == "done" and not task.completed_at:
-                task.completed_at = datetime.now(timezone.utc)
-            elif status != "done":
-                task.completed_at = None
-            db.commit()
-    except Exception:
-        pass
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
-
-
-def _finish_milestone_sync(project_id: int, milestone_id: int) -> None:
-    """모든 태스크 완료 후 마일스톤을 done으로 전환."""
-    from app.db import SessionLocal
-    from app.models import Milestone, ProjectTask
-    try:
-        db = SessionLocal()
-        ms = db.query(Milestone).filter(
-            Milestone.id == milestone_id,
-            Milestone.project_id == project_id,
-        ).first()
-        if ms:
-            all_tasks = db.query(ProjectTask).filter(ProjectTask.milestone_id == milestone_id).all()
-            if all_tasks and all(t.status in ("done", "failed") for t in all_tasks):
-                ms.status = "done"
-                db.commit()
-    except Exception:
-        pass
-    finally:
-        try:
-            db.close()
-        except Exception:
-            pass
-
-
 # ── 노드 구현 ────────────────────────────────────────────────────────────────
 
 async def plan_node(state: GraphState) -> dict:
@@ -408,30 +177,19 @@ async def plan_node(state: GraphState) -> dict:
     await ws.send_json({"type": "progress",     "aiName": manager, "percent": 0})
     await ws.send_json({"type": "current_task", "aiName": manager, "task": "작업 분석 중..."})
 
-    # 시스템 프롬프트 (프로젝트 컨텍스트 주입)
-    worker_list     = "\n".join(f"- 팀원 {i+1}: {n}" for i, n in enumerate(workers))
-    project_context = state.get("project_context", "")
-    project_ctx_section = (
-        f"■ 프로젝트 현황 (이미 완료된 작업 및 파일 — 중복 작업 금지)\n{project_context}\n\n"
-        if project_context else ""
-    )
-    system = _MANAGER_SYSTEM.format(
-        worker_list=worker_list,
-        project_context=project_ctx_section,
-    )
+    # 시스템 프롬프트
+    worker_list = "\n".join(f"- 팀원 {i+1}: {n}" for i, n in enumerate(workers))
+    system = _MANAGER_SYSTEM.format(worker_list=worker_list)
 
     # 메모리 주입
     enriched = _inject_memory(manager, text)
 
-    # 조용히 호출 (스트리밍 없음, rate limit 보호)
+    # 조용히 호출 (스트리밍 없음)
     model = get_lc_model(provider_key, streaming=False)
-    await ws.send_json({"type": "log", "aiName": manager, "message": "⏳ AI 응답 대기 중...\n"})
     try:
-        resp = await safe_ainvoke(
-            model,
+        resp = await model.ainvoke(
             _build_messages(system, enriched),
             config=RunnableConfig(callbacks=[]),
-            provider=provider_key,
         )
         plan_text = resp.content
     except asyncio.CancelledError:
@@ -439,7 +197,6 @@ async def plan_node(state: GraphState) -> dict:
     except Exception as e:
         await ws.send_json({"type": "log", "aiName": manager,
                             "message": f"[오류] 계획 수립 실패: {e}"})
-        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"is_direct": True, "direct_answer": "", "plan_summary": "", "subtasks": []}
 
@@ -451,7 +208,6 @@ async def plan_node(state: GraphState) -> dict:
         await ws.send_json({"type": "status",        "aiName": manager, "status": "COMPLETED"})
         await ws.send_json({"type": "progress",      "aiName": manager, "percent": 100})
         await ws.send_json({"type": "current_task",  "aiName": manager, "task": ""})
-        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"is_direct": True, "direct_answer": plan_text.strip(),
                 "plan_summary": "", "subtasks": []}
@@ -463,56 +219,14 @@ async def plan_node(state: GraphState) -> dict:
     except json.JSONDecodeError:
         await ws.send_json({"type": "log", "aiName": manager,
                             "message": "[오류] 계획 파싱 실패"})
-        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"is_direct": True, "direct_answer": "", "plan_summary": "", "subtasks": []}
 
-    # ── 서브태스크 배정: 자동(adaptive) vs 수동(LLM 판단) ────────
-    distribution_mode = state.get("distribution_mode", "manual")
-    provider_map      = state["provider_map"]
-
-    # provider → 워커 이름 목록 역매핑
-    provider_to_workers: dict[str, list[str]] = {}
-    for w in workers:
-        p = provider_map.get(w, "github")
-        provider_to_workers.setdefault(p, []).append(w)
-    available_providers = list(provider_to_workers.keys())
-
+    # worker_index → 이름 (라운드로빈 폴백)
     subtasks: list[SubTask] = []
     for st in subtasks_raw:
-        task_text = st.get("task", "")
-        task_type = _classify_task_type(task_text)
-
-        chosen_worker: str | None = None
-
-        if distribution_mode == "auto":
-            best_provider = _epsilon_greedy_provider(task_type, available_providers)
-            if best_provider:
-                chosen_worker = provider_to_workers[best_provider][0]
-
-        if not chosen_worker:
-            # 데이터 부족 또는 manual 모드 → LLM worker_index 사용
-            idx = (st.get("worker_index", 1) - 1) % len(workers)
-            chosen_worker = workers[idx]
-
-        subtasks.append({
-            "worker_name": chosen_worker,
-            "task":        task_text,
-            "task_type":   task_type,
-        })
-
-    # ── 마일스톤·태스크 자동 생성 (프로젝트 모드) ───────────────────────
-    project_id   = state.get("project_id")
-    milestone_id = None
-    if project_id and subtasks:
-        milestone_id, task_ids = await asyncio.to_thread(
-            _create_session_milestone, project_id, plan_summary, subtasks
-        )
-        # subtask에 db_task_id 주입
-        subtasks = [
-            {**st, "db_task_id": tid}
-            for st, tid in zip(subtasks, task_ids)
-        ]
+        idx = (st.get("worker_index", 1) - 1) % len(workers)
+        subtasks.append({"worker_name": workers[idx], "task": st.get("task", "")})
 
     # 계획 요약 + 배분 이벤트
     await ws.send_json({"type": "log", "aiName": manager,
@@ -524,131 +238,30 @@ async def plan_node(state: GraphState) -> dict:
     await ws.send_json({"type": "current_task", "aiName": manager, "task": ""})
 
     return {
-        "is_direct":           False,
-        "direct_answer":       "",
-        "plan_summary":        plan_summary,
-        "subtasks":            subtasks,
-        "worker_results":      {},
-        "current_milestone_id": milestone_id,
+        "is_direct":    False,
+        "direct_answer": "",
+        "plan_summary": plan_summary,
+        "subtasks":     subtasks,
+        "worker_results": {},
     }
 
 
-# ── 도구 바인딩 실행 루프 헬퍼 ───────────────────────────────────────────────
-# worker_node 와 retry_node 양쪽에서 공유. 중복 제거.
-
-# 워크스페이스(파일 생성) 모드 전용
-_WORKER_SYSTEM = (
-    "당신은 프로젝트 워크스페이스에 실제 파일을 생성하는 AI 개발자입니다.\n\n"
-    "⚠️ 절대 규칙 — 반드시 지켜야 합니다:\n"
-    "• 코드를 텍스트나 마크다운(``` 블록)으로 출력하면 안 됩니다.\n"
-    "• 모든 코드·설정·문서는 반드시 write_file 도구를 호출해 파일로 저장하세요.\n"
-    "• 파일을 저장하지 않으면 작업 실패로 간주됩니다.\n\n"
-    "■ 작업 순서\n"
-    "1. list_files 로 현재 파일 목록 확인\n"
-    "2. 필요한 파일마다 write_file 호출 (경로는 워크스페이스 루트 기준 상대경로)\n"
-    "   예: write_file(path='src/main.py', content='...')\n"
-    "3. 모든 파일 저장 후 '저장 완료: [파일목록]' 형식으로 요약\n\n"
-    "■ 경로 규칙\n"
-    "• Python 프로젝트: src/main.py, src/models.py, requirements.txt\n"
-    "• FastAPI: src/main.py, src/routers/, requirements.txt\n"
-    "• 절대경로 사용 금지 — 항상 상대경로\n"
-)
-
-# 일반 텍스트 모드 — 1인 창업가 리서치·분석 특화
-_RESEARCH_SYSTEM = (
-    "당신은 1인 창업가를 지원하는 전문 AI 리서처입니다.\n"
-    "맡은 역할에 집중하여 실용적이고 즉시 활용 가능한 결과물을 작성하세요.\n\n"
-
-    "■ 핵심 원칙\n"
-    "• web_search 도구를 적극 활용해 최신 데이터를 기반으로 답변하세요\n"
-    "• 수치·출처·근거를 포함한 구체적인 정보를 제공하세요\n"
-    "• 창업가가 바로 사용할 수 있는 형식으로 정리하세요 (표, 목록, 섹션 구분)\n"
-    "• 추상적 조언보다 '지금 당장 할 수 있는 것'을 우선하세요\n"
-    "• A4 1~2페이지 분량으로 충실하게 작성하세요\n\n"
-
-    "■ 검색 전략\n"
-    "• 한국어 검색: '시장명 시장규모 2024', '경쟁사명 서비스 특징'\n"
-    "• 영어 검색: 'market size [industry] 2024', '[competitor] pricing features'\n"
-    "• 최소 2~3회 검색으로 교차 확인하세요\n\n"
-
-    "■ 출력 형식\n"
-    "• 마크다운으로 작성 (## 제목, | 표, - 목록)\n"
-    "• 핵심 인사이트를 맨 앞에 1~2문장으로 요약\n"
-    "• 데이터 출처는 (출처: URL 또는 기관명) 형식으로 표기\n"
-)
-
-
-async def _run_tool_loop(
-    state:      "GraphState",
-    ws,
-    agent_name: str,
-    messages:   list,
-    tool_map:   dict,
-    model,
-    step_label: str = "AI 응답 대기 중",
-    provider:   str = "github",
-) -> str:
+def dispatch_node(state: GraphState) -> list[Send] | dict:
     """
-    도구 바인딩 LLM 실행 루프 (최대 10회).
-    tool_calls 가 없거나 kill 신호 수신 시 종료.
-    Returns: 최종 텍스트 결과. 오류 시 '[오류] ...' 형태.
+    Phase 2: LangGraph Send API로 서브태스크를 병렬 워커에 분산.
+    각 Send → 독립적인 worker_node 인스턴스로 병렬 실행.
     """
-    from langchain_core.messages import ToolMessage
+    if state.get("is_direct"):
+        return {}
 
-    result = ""
-    for loop_i in range(10):
-        if await _check_control(state, agent_name):
-            break
-
-        await ws.send_json({
-            "type":    "log",
-            "aiName":  agent_name,
-            "message": f"⏳ {step_label} (단계 {loop_i + 1})...\n",
+    return [
+        Send("worker_node", {
+            **state,
+            "current_worker_name": st["worker_name"],
+            "current_task_text":   st["task"],
         })
-
-        try:
-            resp = await safe_ainvoke(
-                model, messages,
-                config=RunnableConfig(callbacks=[]),
-                provider=provider,
-            )
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            result = f"[오류] {e}"
-            await ws.send_json({"type": "log", "aiName": agent_name, "message": result})
-            break
-
-        messages.append(resp)
-
-        if not resp.tool_calls:
-            result = resp.content or ""
-            if result:
-                await ws.send_json({"type": "log", "aiName": agent_name, "message": result})
-            break
-
-        # 도구 실행
-        for tc in resp.tool_calls:
-            tool_name = tc["name"]
-            tool_args = tc["args"]
-            tool_id   = tc["id"]
-
-            await ws.send_json({
-                "type":    "tool_call",
-                "aiName":  agent_name,
-                "tool":    tool_name,
-                "args":    tool_args,
-                "message": f"🔧 {tool_name}({', '.join(f'{k}={repr(v)[:60]}' for k, v in tool_args.items())})",
-            })
-
-            tool_result = (
-                await tool_map[tool_name].ainvoke(tool_args)
-                if tool_name in tool_map
-                else f"[오류] 알 수 없는 도구: {tool_name}"
-            )
-            messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_id))
-
-    return result
+        for st in state["subtasks"]
+    ]
 
 
 async def worker_node(state: GraphState) -> dict:
@@ -666,61 +279,37 @@ async def worker_node(state: GraphState) -> dict:
     if await _check_control(state, worker_name):
         return {"worker_results": {worker_name: ""}}
 
-    # ── 태스크 상태: in_progress ─────────────────────────────────────────
-    db_task_id = state.get("current_task_db_id")
-    project_id = state.get("project_id")
-    if db_task_id and project_id:
-        await asyncio.to_thread(
-            _update_task_status_sync, project_id, db_task_id, "in_progress", worker_name
+    # 이미 완료된 동료 결과를 컨텍스트로 주입 (공유 화이트보드)
+    peer_context = ""
+    existing = state.get("worker_results", {})
+    if existing:
+        peer_context = "\n\n[동료 팀원 진행 결과 참고]\n" + "\n".join(
+            f"- {name}: {result[:300]}..." if len(result) > 300 else f"- {name}: {result}"
+            for name, result in existing.items()
+            if result.strip()
         )
 
     # 메모리 주입
     enriched = _inject_memory(worker_name, task_text)
+    if peer_context:
+        enriched += peer_context
+
+    # 스트리밍 핸들러 + RunnableConfig
+    handler = ProgressWSStreamHandler(ws, worker_name)
+    cfg = RunnableConfig(callbacks=[handler])
+    model = get_lc_model(provider_key, streaming=True)
 
     await ws.send_json({"type": "current_task", "aiName": worker_name, "task": task_text})
 
     result = ""
-
-    # ── LLM 실행 (워크스페이스 유무에 따라 도구 바인딩 분기) ─────────────────
-    workspace_path = state.get("workspace_path", "")
-    project_id     = state.get("project_id")
-
-    handler = ProgressWSStreamHandler(ws, worker_name)
-    cfg     = RunnableConfig(callbacks=[handler])
-
-    if workspace_path and project_id:
-        # ── 도구 바인딩 모드: LLM이 파일 읽기/쓰기/실행 가능 ──────────────
-        from app.ai.workspace_tools import WorkspaceTools
-
-        ws_tools = WorkspaceTools(
-            workspace_path=workspace_path,
-            project_id=project_id,
-            ws=ws,
-            agent_name=worker_name,
-            task_id=db_task_id,
-        )
-        tools    = ws_tools.get_tools()
-        tool_map = {t.name: t for t in tools}
-        model    = get_lc_model(provider_key, streaming=False).bind_tools(tools)
-        messages = _build_messages(_WORKER_SYSTEM, enriched)
-
-        result = await _run_tool_loop(
-            state, ws, worker_name, messages, tool_map, model, provider=provider_key
-        )
-
-    else:
-        # ── 기본 모드: 웹 검색 도구 + 창업 특화 시스템 프롬프트 ────────
-        from app.ai.search_tools import get_search_tool
-        search_tool = get_search_tool()
-        tool_map    = {search_tool.name: search_tool}
-        model       = get_lc_model(provider_key, streaming=False).bind_tools([search_tool])
-        messages    = _build_messages(_RESEARCH_SYSTEM, enriched)
-
-        result = await _run_tool_loop(
-            state, ws, worker_name, messages, tool_map, model, provider=provider_key
-        )
-        if not result:
-            result = ""
+    try:
+        resp = await model.ainvoke(_build_messages("", enriched), config=cfg)
+        result = resp.content
+    except asyncio.CancelledError:
+        result = ""
+    except Exception as e:
+        result = f"[오류] {e}"
+        await ws.send_json({"type": "log", "aiName": worker_name, "message": result})
 
     # 메모리 저장
     if result:
@@ -729,54 +318,9 @@ async def worker_node(state: GraphState) -> dict:
         except Exception:
             pass
 
-    # ── 태스크 상태: done / failed ────────────────────────────────────────
-    if db_task_id and project_id:
-        final_status = "failed" if (result or "").startswith("[오류]") else "done"
-        await asyncio.to_thread(
-            _update_task_status_sync, project_id, db_task_id, final_status
-        )
-        # 마일스톤 완료 여부 확인
-        milestone_id = state.get("current_milestone_id")
-        if milestone_id:
-            await asyncio.to_thread(_finish_milestone_sync, project_id, milestone_id)
-
     await ws.send_json({"type": "current_task", "aiName": worker_name, "task": ""})
 
     return {"worker_results": {worker_name: result}}
-
-
-async def workers_node(state: GraphState) -> dict:
-    """
-    모든 워커를 asyncio.gather()로 진짜 병렬 실행.
-    LangGraph Send API는 WebSocket 등 직렬화 불가 객체가 포함된 상태에서
-    순차 실행으로 폴백하기 때문에 이 방식으로 대체.
-    _LockedWS로 WebSocket 동시 쓰기 충돌을 방지한다.
-    """
-    subtasks = state.get("subtasks", [])
-    if not subtasks:
-        return {"worker_results": {}}
-
-    # 병렬 실행 중 WebSocket 동시 쓰기 충돌 방지
-    ws_lock = asyncio.Lock()
-    safe_ws = _LockedWS(state["websocket"], ws_lock)
-
-    async def _run_one(st: SubTask) -> dict:
-        local_state = {
-            **state,
-            "websocket":           safe_ws,  # locked ws 주입
-            "current_worker_name": st["worker_name"],
-            "current_task_text":   st["task"],
-            "current_task_db_id":  st.get("db_task_id"),
-            "worker_results":      {},
-        }
-        return (await worker_node(local_state))["worker_results"]
-
-    results_list = await asyncio.gather(*[_run_one(st) for st in subtasks])
-
-    merged: dict[str, str] = {}
-    for r in results_list:
-        merged.update(r)
-    return {"worker_results": merged}
 
 
 async def synthesize_node(state: GraphState) -> dict:
@@ -790,7 +334,6 @@ async def synthesize_node(state: GraphState) -> dict:
 
     # kill 체크
     if await _check_control(state, manager):
-        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"final_synthesis": ""}
 
@@ -805,27 +348,21 @@ async def synthesize_node(state: GraphState) -> dict:
         await ws.send_json({"type": "log", "aiName": manager,
                             "message": "[오류] 팀원 결과가 없습니다."})
         await ws.send_json({"type": "status",   "aiName": manager, "status": "COMPLETED"})
-        await _send_token_usage(ws, manager)
         await ws.send_json({"type": "orchestration_done", "aiName": manager})
         return {"final_synthesis": ""}
 
-    # 리뷰 피드백이 있으면 종합 프롬프트에 포함
-    review_fb = state.get("review_feedback", "")
-    review_section = f"\n\n[리뷰어 피드백]\n{review_fb}" if review_fb else ""
-
     synthesis_prompt = (
         "팀원들의 작업이 완료되었습니다. 결과를 종합하여 사용자에게 최종 답변을 작성해주세요.\n\n"
-        f"원래 요청: {state['user_prompt']}\n\n"
-        + "\n\n".join(valid)
-        + review_section
+        f"원래 요청: {state['user_prompt']}\n\n" + "\n\n".join(valid)
     )
 
     # 종합 단계 알림
     await ws.send_json({"type": "orchestration_synthesis", "aiName": manager})
     await ws.send_json({"type": "current_task", "aiName": manager, "task": "결과 종합 중..."})
 
-    # 종합 전용 시스템 프롬프트 (ORCHESTRATE 형식 유도 없음)
-    system = _SYNTHESIS_SYSTEM
+    # 시스템 프롬프트
+    worker_list = "\n".join(f"- 팀원 {i+1}: {n}" for i, n in enumerate(state["worker_names"]))
+    system = _MANAGER_SYSTEM.format(worker_list=worker_list)
 
     # 스트리밍
     handler = ProgressWSStreamHandler(ws, manager)
@@ -834,9 +371,7 @@ async def synthesize_node(state: GraphState) -> dict:
 
     synthesis = ""
     try:
-        resp = await safe_ainvoke(
-            model, _build_messages(system, synthesis_prompt), config=cfg, provider=provider_key
-        )
+        resp = await model.ainvoke(_build_messages(system, synthesis_prompt), config=cfg)
         synthesis = resp.content
     except asyncio.CancelledError:
         synthesis = ""
@@ -856,330 +391,10 @@ async def synthesize_node(state: GraphState) -> dict:
     return {"final_synthesis": synthesis}
 
 
-_SYNTHESIS_SYSTEM = (
-    "당신은 AI 팀의 총괄 관리자입니다.\n"
-    "팀원들의 작업 결과를 통합하여 사용자에게 완성도 높은 최종 답변을 작성하세요.\n\n"
-    "■ 작성 원칙\n"
-    "• 팀원 결과를 그대로 나열하지 말고, 논리적으로 연결해 하나의 완성된 답변으로 만드세요.\n"
-    "• 사용자 요청을 다시 읽고, 그에 정확히 답변하는 구조로 작성하세요.\n"
-    "• 중복 내용은 제거하고, 상충되는 내용은 더 나은 쪽을 선택하세요.\n"
-    "• 코드가 있으면 코드 블록으로, 문서는 마크다운으로 정리하세요.\n"
-    "• <ORCHESTRATE> 형식은 절대 사용하지 마세요. 일반 텍스트로 답변하세요.\n"
-)
-
-_REVIEWER_SYSTEM = (
-    "당신은 AI 팀의 전문 검토자입니다.\n"
-    "팀원의 작업 결과물을 검토하고 명확하고 건설적인 피드백을 제공합니다.\n"
-    "반드시 아래 형식을 그대로 사용하세요:\n\n"
-    "✅ 잘된 점: (2-3줄)\n"
-    "⚠️ 개선 필요: (2-3줄, 없으면 '없음')\n"
-    "📋 종합: 합격 / 보완 필요 (한 줄)\n"
-    "⭐ 점수: X/10  ← 반드시 이 형식으로, X는 1~10 사이 정수\n\n"
-    "점수 기준: 10=완벽, 8-9=우수, 6-7=양호, 4-5=보통, 1-3=미흡"
-)
-
-
-async def review_node(state: GraphState) -> dict:
-    """
-    교차 리뷰: 워커가 쓴 모델과 다른 모델로 각 결과물 검토.
-    asyncio.gather()로 모든 워커 리뷰를 병렬 실행.
-    _LockedWS로 WebSocket 동시 쓰기 충돌을 방지한다.
-    """
-    _raw_ws = state["websocket"]
-    manager = state["manager_name"]
-    results = state.get("worker_results", {})
-
-    if not results:
-        return {"review_feedback": "", "review_scores": {}}
-
-    # 병렬 리뷰 중 WebSocket 동시 쓰기 충돌 방지
-    ws_lock = asyncio.Lock()
-    ws      = _LockedWS(_raw_ws, ws_lock)  # 이후 closure들이 locked ws 참조
-
-    await ws.send_json({"type": "review_start", "aiName": manager})
-
-    async def _review_one(worker_name: str, result: str) -> tuple:
-        """단일 워커 결과 리뷰. (worker_name, score, feedback, reviewer_key) 반환."""
-        if not result or not result.strip():
-            return worker_name, None, "", ""
-
-        if await _check_control(state, manager):
-            return worker_name, None, "", ""
-
-        worker_provider = state["provider_map"].get(worker_name, "github")
-        reviewer_key    = _get_reviewer_key(worker_provider)
-
-        prompt = (
-            f"원래 요청: {state['user_prompt']}\n\n"
-            f"[{worker_name}]의 작업 결과:\n{result[:2500]}\n\n"
-            "위 결과물을 검토하고 형식에 맞춰 피드백해주세요."
-        )
-
-        await ws.send_json({
-            "type":          "review_begin",
-            "aiName":        worker_name,
-            "reviewerModel": reviewer_key.upper(),
-        })
-
-        handler = ProgressWSStreamHandler(ws, worker_name)
-        cfg     = RunnableConfig(callbacks=[handler])
-        model   = get_lc_model(reviewer_key, streaming=True)
-
-        feedback = ""
-        try:
-            resp = await safe_ainvoke(
-                model, _build_messages(_REVIEWER_SYSTEM, prompt), config=cfg,
-                provider=reviewer_key,
-            )
-            feedback = resp.content
-        except asyncio.CancelledError:
-            return worker_name, None, "", reviewer_key
-        except Exception as e:
-            feedback = f"[검토 오류] {e}"
-            await ws.send_json({"type": "log", "aiName": worker_name, "message": feedback})
-
-        score_match = _SCORE_RE.search(feedback)
-        score = int(score_match.group(1)) if score_match else None
-
-        await ws.send_json({
-            "type":          "review_done",
-            "aiName":        worker_name,
-            "feedback":      feedback,
-            "score":         score,
-            "reviewerModel": reviewer_key.upper(),
-        })
-
-        return worker_name, score, feedback, reviewer_key
-
-    # ── 모든 리뷰 병렬 실행 ──────────────────────────────────────
-    review_tuples = await asyncio.gather(*[
-        _review_one(name, res) for name, res in results.items()
-    ])
-
-    all_feedback:  list[str]            = []
-    review_scores: dict[str, int|None]  = {}
-    for worker_name, score, feedback, reviewer_key in review_tuples:
-        review_scores[worker_name] = score
-        if feedback:
-            all_feedback.append(f"[{worker_name} 검토 — {reviewer_key.upper()}]\n{feedback}")
-
-    # ── 점수 DB 저장 (적응형 분배용) — 병렬 저장 ──────────────
-    subtask_map: dict[str, str] = {
-        st["worker_name"]: st.get("task_type", "general")
-        for st in state.get("subtasks", [])
-    }
-    save_coros = [
-        asyncio.to_thread(
-            _save_performance_sync,
-            subtask_map.get(wn, "general"),
-            state["provider_map"].get(wn, "github"),
-            sc,
-        )
-        for wn, sc in review_scores.items()
-        if sc is not None
-    ]
-    if save_coros:
-        await asyncio.gather(*save_coros)
-
-    return {
-        "review_feedback": "\n\n".join(all_feedback),
-        "review_scores":   review_scores,
-    }
-
-
-# ── 사용자 교차검증 노드 ──────────────────────────────────────────────────────
-
-_USER_REVIEW_TIMEOUT = 15   # 초
-
-async def user_review_node(state: GraphState) -> dict:
-    """
-    AI 리뷰 완료 후 사용자에게 15초 검증 기회 제공.
-    - 승인: 바로 synthesize
-    - 피드백 입력: 점수 낮은 워커 재실행
-    - 타임아웃: 자동 승인 후 synthesize
-    """
-    ws      = state["websocket"]
-    manager = state["manager_name"]
-    am      = state["agent_manager_ref"]
-    scores  = state.get("review_scores", {})
-
-    # 사용자 리뷰 요청 전송
-    await ws.send_json({
-        "type":    "user_review_request",
-        "aiName":  manager,
-        "scores":  scores,
-        "timeout": _USER_REVIEW_TIMEOUT,
-    })
-
-    # 이벤트 대기 (15초 타임아웃)
-    event = am.request_user_review(manager)
-    timed_out = False
-    try:
-        await asyncio.wait_for(event.wait(), timeout=float(_USER_REVIEW_TIMEOUT))
-    except asyncio.TimeoutError:
-        timed_out = True
-
-    result = am.get_user_review_result(manager)
-    am.clear_user_review(manager)
-
-    await ws.send_json({
-        "type":     "user_review_done",
-        "aiName":   manager,
-        "timedOut": timed_out,
-    })
-
-    # ── 재실행 워커 결정 ─────────────────────────────────────────
-    retry_workers: list[str] = []
-    if not timed_out and not result["approved"] and result["feedback"].strip():
-        # 피드백이 있고 승인 안 된 경우 → 점수 낮은 워커만 재실행
-        for worker, score in scores.items():
-            if score is None or score < 7:
-                retry_workers.append(worker)
-        # 전부 점수 높으면(사용자만 불만) 전체 재실행
-        if not retry_workers:
-            retry_workers = list(scores.keys())
-
-    return {
-        "user_feedback":      result["feedback"],
-        "user_approved":      result["approved"],
-        "review_timed_out":   timed_out,
-        "retry_worker_names": retry_workers,
-    }
-
-
-# ── 재실행 워커 노드 ──────────────────────────────────────────────────────────
-
-async def retry_node(state: GraphState) -> dict:
-    """
-    사용자 피드백을 반영하여 특정 워커를 재실행.
-    worker_node와 동일하지만 user_feedback를 컨텍스트에 주입.
-    review_node를 거치지 않고 synthesize_node로 직행.
-    """
-    ws           = state["websocket"]
-    worker_name  = state["current_worker_name"]
-    task_text    = state["current_task_text"]
-    provider_key = state["provider_map"].get(worker_name, "github")
-    user_fb      = state.get("user_feedback", "")
-    db_task_id   = state.get("current_task_db_id")
-
-    if await _check_control(state, worker_name):
-        return {"worker_results": {worker_name: ""}}
-
-    # 사용자 피드백을 태스크에 주입
-    enriched = _inject_memory(worker_name, task_text)
-    if user_fb:
-        enriched += f"\n\n[사용자 검토 의견 — 반드시 반영하세요]\n{user_fb}"
-
-    # 기존 결과도 컨텍스트로 제공
-    prev = state.get("worker_results", {}).get(worker_name, "")
-    if prev:
-        enriched += f"\n\n[이전 작성 내용 (수정 필요)]\n{prev[:800]}"
-
-    await ws.send_json({
-        "type":   "log",
-        "aiName": worker_name,
-        "message": f"\n🔄 사용자 피드백 반영 후 재작업 중...\n",
-    })
-    await ws.send_json({"type": "current_task", "aiName": worker_name, "task": task_text})
-
-    result = ""
-
-    workspace_path = state.get("workspace_path", "")
-    project_id     = state.get("project_id")
-
-    handler = ProgressWSStreamHandler(ws, worker_name)
-    cfg = RunnableConfig(callbacks=[handler])
-
-    if workspace_path and project_id:
-        # 워크스페이스 모드 재실행 (도구 바인딩)
-        from app.ai.workspace_tools import WorkspaceTools
-
-        ws_tools = WorkspaceTools(
-            workspace_path=workspace_path,
-            project_id=project_id,
-            ws=ws,
-            agent_name=worker_name,
-            task_id=db_task_id,
-        )
-        tools    = ws_tools.get_tools()
-        tool_map = {t.name: t for t in tools}
-        model    = get_lc_model(provider_key, streaming=False).bind_tools(tools)
-        messages = _build_messages(_WORKER_SYSTEM, enriched)
-
-        result = await _run_tool_loop(
-            state, ws, worker_name, messages, tool_map, model,
-            step_label="재실행 AI 응답 대기 중",
-            provider=provider_key,
-        )
-    else:
-        from app.ai.search_tools import get_search_tool
-        search_tool = get_search_tool()
-        tool_map    = {search_tool.name: search_tool}
-        model       = get_lc_model(provider_key, streaming=False).bind_tools([search_tool])
-        messages    = _build_messages(_RESEARCH_SYSTEM, enriched)
-
-        result = await _run_tool_loop(
-            state, ws, worker_name, messages, tool_map, model,
-            step_label="재실행 AI 응답 대기 중",
-            provider=provider_key,
-        )
-        if not result:
-            result = ""
-
-    await ws.send_json({"type": "current_task", "aiName": worker_name, "task": ""})
-    return {"worker_results": {worker_name: result}}
-
-
-async def retry_workers_node(state: GraphState) -> dict:
-    """
-    사용자 피드백 반영 재실행 워커들을 asyncio.gather()로 병렬 실행.
-    _LockedWS로 WebSocket 동시 쓰기 충돌을 방지한다.
-    """
-    retry_names = state.get("retry_worker_names", [])
-    subtask_map = {st["worker_name"]: st["task"] for st in state.get("subtasks", [])}
-
-    # 병렬 실행 중 WebSocket 동시 쓰기 충돌 방지
-    ws_lock = asyncio.Lock()
-    safe_ws = _LockedWS(state["websocket"], ws_lock)
-
-    async def _run_one(name: str) -> dict:
-        local_state = {
-            **state,
-            "websocket":           safe_ws,  # locked ws 주입
-            "current_worker_name": name,
-            "current_task_text":   subtask_map.get(name, ""),
-            "current_task_db_id":  None,
-            "worker_results":      {},
-        }
-        return (await retry_node(local_state))["worker_results"]
-
-    results_list = await asyncio.gather(*[_run_one(name) for name in retry_names])
-
-    merged: dict[str, str] = {}
-    for r in results_list:
-        merged.update(r)
-    return {"worker_results": merged}
-
-
 # ── 라우팅 ────────────────────────────────────────────────────────────────────
 
-def route_after_plan(state: GraphState):
-    """plan_node 이후: 직접 답변 → END, 분배 → workers_node (asyncio.gather 병렬)."""
-    if state.get("is_direct"):
-        return END
-    return "workers_node"
-
-
-def route_after_user_review(state: GraphState):
-    """
-    user_review_node 이후 라우팅.
-    - 재실행 필요 워커 있음 → retry_workers_node (asyncio.gather 병렬)
-    - 없음 → synthesize_node
-    """
-    retry_workers = state.get("retry_worker_names", [])
-    if not retry_workers:
-        return "synthesize_node"
-    return "retry_workers_node"
+def route_after_plan(state: GraphState) -> str:
+    return END if state.get("is_direct") else "dispatch_node"
 
 
 # ── 그래프 빌드 ───────────────────────────────────────────────────────────────
@@ -1187,21 +402,20 @@ def route_after_user_review(state: GraphState):
 def build_graph():
     g = StateGraph(GraphState)
 
-    # worker_node / retry_node 는 helpers — LangGraph 노드로 직접 등록하지 않음
-    g.add_node("plan_node",          plan_node)
-    g.add_node("workers_node",       workers_node)        # asyncio.gather 병렬 워커 컨테이너
-    g.add_node("review_node",        review_node)         # asyncio.gather 병렬 교차 리뷰
-    g.add_node("user_review_node",   user_review_node)    # 사용자 교차검증 (15초)
-    g.add_node("retry_workers_node", retry_workers_node)  # asyncio.gather 병렬 재실행 컨테이너
-    g.add_node("synthesize_node",    synthesize_node)
+    g.add_node("plan_node",       plan_node)
+    g.add_node("dispatch_node",   dispatch_node)
+    g.add_node("worker_node",     worker_node)
+    g.add_node("synthesize_node", synthesize_node)
 
-    g.add_edge(START,                  "plan_node")
-    g.add_conditional_edges("plan_node",        route_after_plan)
-    g.add_edge("workers_node",         "review_node")
-    g.add_edge("review_node",          "user_review_node")
-    g.add_conditional_edges("user_review_node", route_after_user_review)
-    g.add_edge("retry_workers_node",   "synthesize_node")
-    g.add_edge("synthesize_node",      END)
+    g.add_edge(START, "plan_node")
+    g.add_conditional_edges(
+        "plan_node",
+        route_after_plan,
+        {"dispatch_node": "dispatch_node", END: END},
+    )
+    g.add_edge("dispatch_node",   "worker_node")
+    g.add_edge("worker_node",     "synthesize_node")
+    g.add_edge("synthesize_node", END)
 
     return g.compile()
 

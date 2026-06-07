@@ -1,11 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import styles from './ChatPage.module.css'
 import AgentWorkspace from './AgentWorkspace'
-import ProjectSelector from './ProjectSelector'
-import MilestoneBoard from './MilestoneBoard'
-import SessionPanel   from './SessionPanel'
-import { sendChatMessage, analyzeRequest, detectProjectIntent, AGENT_TEMPLATES, AI_ROLE_MAP, AI_LABELS } from '../utils/agentManager'
-import AgentConfigPanel from './AgentConfigPanel'
+import { sendChatMessage, generateChatResponse, analyzeRequest, detectProjectIntent, QUICK_TEMPLATES } from '../utils/agentManager'
 
 
 // ── 채팅 저장소 헬퍼 ─────────────────────────────────────────
@@ -107,6 +103,7 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
   const messagesEndRef  = useRef(null)
   const chatBtnRef      = useRef(null)
   const dragStateRef    = useRef({ dragging: false })
+
   const uid = user?.uid ?? 'guest'
 
   // ── 채팅 목록 ─────────────────────────────────────────────
@@ -143,13 +140,6 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
   const [workspace, setWorkspace]     = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [chatModalOpen, setChatModalOpen] = useState(false)
-  // 에이전트 구성 모달
-  const [configOpen,       setConfigOpen]       = useState(false)
-  const [configInitial,    setConfigInitial]    = useState([])
-  const [pendingTemplateReq, setPendingTemplateReq] = useState('')
-  const [projectId, setProjectId]         = useState(null)   // 선택된 프로젝트 ID
-  const [milestoneOpen, setMilestoneOpen] = useState(false)  // MilestoneBoard 패널
-  const [sessionOpen,   setSessionOpen]   = useState(false)  // SessionPanel 패널
 
   const busy = false
 
@@ -297,7 +287,7 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
       } else if (errMsg.includes('fetch') || errMsg.includes('Failed') || errMsg.includes('NetworkError') || errMsg.includes('ECONNREFUSED')) {
         reply = '⚠️ 백엔드 서버에 연결할 수 없습니다.\nVSCode에서 F5를 눌러 서버를 먼저 실행해주세요.'
       } else {
-        reply = '⚠️ 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
+        reply = generateChatResponse(text)
       }
       setMessages(prev => {
         if (prev.some(m => m.id === aiId)) {
@@ -344,7 +334,7 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
       } else if (errMsg.includes('fetch') || errMsg.includes('Failed') || errMsg.includes('ECONNREFUSED')) {
         reply = '⚠️ 백엔드 서버에 연결할 수 없습니다.'
       } else {
-        reply = '⚠️ 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해주세요.'
+        reply = generateChatResponse(text)
       }
       setMessages(prev => {
         if (prev.some(m => m.id === aiId)) {
@@ -373,53 +363,11 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
     setTimeout(() => inputRef.current?.focus(), 50)
   }
 
-  // ── 사이드 패널 토글 (하나만 열림) ──────────────────────
-  const toggleMilestone = () => {
-    setMilestoneOpen(o => { const next = !o; if (next) setSessionOpen(false); return next })
-  }
-  const toggleSession = () => {
-    setSessionOpen(o => { const next = !o; if (next) setMilestoneOpen(false); return next })
-  }
-
-  // ── 에이전트 구성 확인 후 워크스페이스 시작 ───────────────
-  const _startWithAgents = (agents, request = '') => {
-    setWorkspace({ id: Date.now(), agents, request, instant: false })
-    setChatModalOpen(true)
-  }
-
-  // ── 템플릿으로 워크스페이스 시작 (config panel 경유) ────────
-  const handleTemplateStart = (template) => {
-    const HANDOFF_MSGS = { analyst: '분석 결과 전달', collector: '수집 데이터 전달', executor: '실행 결과 전달', reviewer: '검토 완료본 전달', writer: null }
-    const agents = template.agents.map((a, i, arr) => ({
-      ...a,
-      isManager:  i === 0,   // 첫 번째가 관리자
-      aiType:     AI_ROLE_MAP[a.roleKey] ?? 'github',
-      color:      (AI_LABELS[AI_ROLE_MAP[a.roleKey] ?? 'github'] ?? { color: '#7c6dfa' }).color,
-      handoffMsg: i < arr.length - 1 ? (HANDOFF_MSGS[a.roleKey] ?? '다음 에이전트로 전달') : null,
-    }))
-    setPendingTemplateReq(template.desc)   // desc를 초기 요청으로 보존
-    setConfigInitial(agents)
-    setConfigOpen(true)
-  }
-
-  // ── 채팅 없이 바로 워크스페이스 열기 (config panel 경유) ───
-  const handleOpenWorkspace = () => {
-    const defaultAgents = [
-      { roleKey: 'analyst',  name: '관리자 AI',  aiType: 'github', provider: 'github', color: '#7c6dfa', isManager: true,  task: '', handoffMsg: null },
-      { roleKey: 'executor', name: '작업자 AI A', aiType: 'github', provider: 'github', color: '#4caf82', isManager: false, task: '', handoffMsg: null },
-      { roleKey: 'writer',   name: '작업자 AI B', aiType: 'github', provider: 'github', color: '#f5a623', isManager: false, task: '', handoffMsg: null },
-    ]
-    setConfigInitial(defaultAgents)
-    setConfigOpen(true)
-  }
-
   // ── 워크스페이스 닫기 (채팅으로 복귀) ────────────────────
   const handleCloseWorkspace = () => {
     setWorkspace(null)
     setMode('chat')
     setChatModalOpen(false)
-    setMilestoneOpen(false)
-    setSessionOpen(false)
     addMsg({ role: 'ai', text: '작업이 완료되었습니다. 추가로 도움이 필요하시면 말씀해 주세요.' })
     setTimeout(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -535,17 +483,6 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
   return (
     <div className={styles.chatpage}>
 
-      {/* ── 에이전트 구성 모달 ── */}
-      <AgentConfigPanel
-        open={configOpen}
-        initial={configInitial}
-        onClose={() => { setConfigOpen(false); setPendingTemplateReq('') }}
-        onConfirm={(agents) => {
-          _startWithAgents(agents, pendingTemplateReq)
-          setPendingTemplateReq('')
-        }}
-      />
-
       {/* ── 사이드바 백드롭 (일반 챗 모드만) ── */}
       {!workspace && sidebarOpen && (
         <div className={styles.sidebarBackdrop} onClick={() => setSidebarOpen(false)} />
@@ -596,32 +533,7 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
                   <div className={styles.wsFullDot} />
                   <span className={styles.wsFullTitle}>AI 에이전트 협업</span>
                 </div>
-                {/* 프로젝트 선택기 — 워크스페이스 헤더 중앙 */}
-                <ProjectSelector
-                  projectId={projectId}
-                  onProjectChange={id => { setProjectId(id); setMilestoneOpen(false); setSessionOpen(false) }}
-                />
                 <div className={styles.wsFullHeaderRight}>
-                  {/* 마일스톤 보드 토글 */}
-                  {projectId && (
-                    <button
-                      className={`${styles.panelToggleBtn} ${milestoneOpen ? styles.panelToggleBtnActive : ''}`}
-                      onClick={toggleMilestone}
-                      title="마일스톤 / 태스크"
-                    >
-                      📋
-                    </button>
-                  )}
-                  {/* 세션 이력 토글 */}
-                  {projectId && (
-                    <button
-                      className={`${styles.panelToggleBtn} ${sessionOpen ? styles.panelToggleBtnActive : ''}`}
-                      onClick={toggleSession}
-                      title="세션 이력"
-                    >
-                      📅
-                    </button>
-                  )}
                   <button className={styles.fontSizeBtn} onClick={onFontSizeCycle} title="글씨 크기">
                     {fontLabel}
                   </button>
@@ -637,19 +549,6 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
                   agents={workspace.agents}
                   request={workspace.request}
                   instant={workspace.instant ?? false}
-                  projectId={projectId}
-                />
-                {/* 마일스톤 보드 패널 */}
-                <MilestoneBoard
-                  projectId={projectId}
-                  visible={milestoneOpen}
-                  onClose={() => setMilestoneOpen(false)}
-                />
-                {/* 세션 이력 패널 */}
-                <SessionPanel
-                  projectId={projectId}
-                  visible={sessionOpen}
-                  onClose={() => setSessionOpen(false)}
                 />
               </div>
             </div>
@@ -734,24 +633,6 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
                 <div className={styles.topbarName}>관리자 AI</div>
                 <div className={styles.topbarStatus}>온라인</div>
               </div>
-              {/* 프로젝트 선택기 */}
-              <ProjectSelector
-                projectId={projectId}
-                onProjectChange={id => { setProjectId(id); setMilestoneOpen(false); setSessionOpen(false) }}
-              />
-              {/* 워크스페이스 바로 열기 */}
-              <button
-                className={styles.workspaceBtn}
-                onClick={handleOpenWorkspace}
-                title="워크스페이스 열기"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                  <line x1="8" y1="21" x2="16" y2="21"/>
-                  <line x1="12" y1="17" x2="12" y2="21"/>
-                </svg>
-                <span>워크스페이스</span>
-              </button>
               {user?.name && (
                 <div className={styles.userBadge}>{user.name}</div>
               )}
@@ -771,38 +652,28 @@ export default function ChatPage({ user, onBack, theme = 'dark', onThemeToggle, 
                   <div className={styles.centerTitle}>관리자 AI</div>
                   <div className={styles.centerSub}>
                     {user?.name
-                      ? `${user.name}님, 무엇이든 도와드릴게요.`
-                      : '무엇이든 편하게 말씀해 주세요.'}
+                      ? `${user.name}님, 오늘 어떤 작업을 도와드릴까요?`
+                      : '1인 창업가를 위한 AI 팀입니다. 어떤 작업을 도와드릴까요?'}
                   </div>
-                  {renderInputBar()}
 
-                  {/* ── 1인 스타트업 템플릿 빠른 시작 ── */}
-                  <div className={styles.templateSection}>
-                    <div className={styles.templateLabel}>🚀 빠른 시작 — AI 팀 템플릿</div>
-                    {[
-                      { category: '기획·검증', ids: ['startup_validate', 'pitch_prep'] },
-                      { category: '운영·리서치', ids: ['weekly_brief', 'customer_research'] },
-                      { category: '마케팅·영업·행정', ids: ['cold_email', 'legal_docs'] },
-                      { category: '자금·전략', ids: ['gov_funding', 'biz_strategy'] },
-                    ].map(group => (
-                      <div key={group.category} className={styles.templateGroup}>
-                        <div className={styles.templateGroupLabel}>{group.category}</div>
-                        <div className={styles.templateChips}>
-                          {AGENT_TEMPLATES.filter(t => group.ids.includes(t.id)).map(t => (
-                            <button
-                              key={t.id}
-                              className={styles.templateChip}
-                              onClick={() => handleTemplateStart(t)}
-                              title={t.desc}
-                            >
-                              <span className={styles.templateChipTitle}>{t.label}</span>
-                              <span className={styles.templateChipDesc}>{t.desc}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                  {/* 퀵 템플릿 칩 */}
+                  <div className={styles.quickChips}>
+                    {QUICK_TEMPLATES.map((tpl, i) => (
+                      <button
+                        key={i}
+                        className={styles.quickChip}
+                        onClick={() => {
+                          setInput(tpl.text)
+                          setTimeout(() => inputRef.current?.focus(), 30)
+                        }}
+                      >
+                        <span className={styles.quickChipIcon}>{tpl.icon}</span>
+                        {tpl.label}
+                      </button>
                     ))}
                   </div>
+
+                  {renderInputBar()}
                 </div>
               </div>
             ) : (
