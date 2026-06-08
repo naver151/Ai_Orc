@@ -88,9 +88,40 @@
   font-size: clamp(0.9rem, 2vw, 1.05rem);
   color: var(--text2);
   line-height: 1.7;
-  margin-bottom: 3rem;
+  margin-bottom: 1.5rem;
   max-width: 420px;
 }
+
+/* ── 역할 카드 행 ── */
+.roleRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: 2rem;
+  max-width: 520px;
+}
+
+.roleCard {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text2);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.roleCard:hover {
+  border-color: rgba(124,109,250,0.4);
+  color: var(--text);
+  background: var(--surface2);
+}
+.roleIcon { font-size: 14px; line-height: 1; }
+.roleLabel { letter-spacing: 0.01em; }
 
 .btnRow {
   display: flex;
@@ -137,43 +168,22 @@
   transform: scale(1.04);
 }
 
-/* ── 역할 카드 행 ── */
-.roleRow {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: center;
-  margin-bottom: 2.5rem;
-  max-width: 520px;
+/* ── 관리자 버튼 ── */
+.btnAdmin {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0.8rem 1.4rem;
+  background: transparent;
+  color: var(--text3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-
-.roleCard {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
+.btnAdmin:hover {
   background: var(--surface);
-  border: 1px solid var(--border2);
-  border-radius: 20px;
-  font-size: 12px;
-  font-weight: 500;
   color: var(--text2);
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
-}
-
-.roleCard:hover {
-  border-color: rgba(124,109,250,0.4);
-  color: var(--text);
-  background: var(--surface2);
-}
-
-.roleIcon {
-  font-size: 14px;
-  line-height: 1;
-}
-
-.roleLabel {
-  letter-spacing: 0.01em;
 }
 
 @media (max-width: 480px) {

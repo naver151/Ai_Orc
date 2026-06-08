@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import styles from './LandingPage.module.css'
 import { FOUNDER_ROLES } from '../utils/agentManager'
 
-export default function LandingPage({ onStart, onInfo, theme = 'dark', onThemeToggle }) {
+export default function LandingPage({ onStart, onInfo, onAdmin, theme = 'dark', onThemeToggle }) {
   const startBtnRef = useRef(null)
 
   const handleStart = () => {
@@ -47,7 +47,7 @@ export default function LandingPage({ onStart, onInfo, theme = 'dark', onThemeTo
           전략·마케팅·개발·리서치를 AI 팀이 동시에 처리합니다.
         </p>
 
-        {/* 역할 소개 */}
+        {/* 역할 소개 카드 */}
         <div className={styles.roleRow}>
           {roles.map(([key, role]) => (
             <div key={key} className={styles.roleCard}>
@@ -63,6 +63,9 @@ export default function LandingPage({ onStart, onInfo, theme = 'dark', onThemeTo
           </button>
           <button className={styles.btnInfo} onClick={onInfo}>
             설명 보기
+          </button>
+          <button className={styles.btnAdmin} onClick={onAdmin}>
+            관리자
           </button>
         </div>
       </div>
